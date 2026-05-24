@@ -1,4 +1,4 @@
-"""Step-3 displacement evaluation pipeline for LIBERO Phase-0."""
+"""LIBERO camera displacement evaluation pipeline for LIBERO camera-robustness evaluation."""
 
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ class DisplacementEvaluatorConfig:
     resolution: int = 256
     seed: int = 7
     rotation_weight: float = 0.01
-    output_dir: str = "results/phase0/displacement_eval"
+    output_dir: str = "results/libero_pair/displacement_eval"
     write_plots: bool = True
     write_videos: bool = False
 
@@ -479,8 +479,8 @@ class DisplacementEvaluator:
             self.generate_results_table_markdown(aggregate_rows),
             encoding="utf-8",
         )
-        (self.output_dir / "phase0_summary.md").write_text(
-            self.generate_phase0_summary_markdown(summaries, aggregate_rows, metrics),
+        (self.output_dir / "libero_pair_summary.md").write_text(
+            self.generate_libero_pair_summary_markdown(summaries, aggregate_rows, metrics),
             encoding="utf-8",
         )
         (self.output_dir / "run_manifest.json").write_text(
@@ -539,7 +539,7 @@ class DisplacementEvaluator:
         lines.append("")
         return "\n".join(lines)
 
-    def generate_phase0_summary_markdown(
+    def generate_libero_pair_summary_markdown(
         self,
         summaries: Sequence[EvalSummaryRow],
         aggregate_rows: Sequence[Mapping[str, Any]],
@@ -550,7 +550,7 @@ class DisplacementEvaluator:
             by_task[row.task_spec].append(row)
 
         lines = [
-            "# Phase-0 Step-3 Summary",
+            "# Camera Displacement Evaluation Summary",
             "",
             "## Config",
             f"- task_specs: {', '.join(self.config.task_specs)}",

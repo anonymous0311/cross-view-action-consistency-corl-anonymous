@@ -22,7 +22,6 @@ for rel_path in ("openpi/src", "openpi/packages/openpi-client/src", "LIBERO-plus
     if abs_path.exists() and str(abs_path) not in sys.path:
         sys.path.insert(0, str(abs_path))
 
-from canonical.eval.libero_plus_eval import CanonicalInferenceExtractor
 from canonical.eval.libero_plus_eval import LIBEROPlusCameraEvaluator
 from canonical.eval.libero_plus_eval import NOMINAL_BASELINE_TASK_SPECS
 from canonical.eval.libero_plus_eval import TrialResult
@@ -59,14 +58,6 @@ class Args:
     skip_masking: bool = False
     only_masking: bool = False
     max_tasks: int | None = None
-    # M5 canonical: if set, load Stage 1 encoder and inject canonical tokens each step
-    stage1_checkpoint: str = ""
-    stage1_config: str = "configs/stage1_v3_slotnce.yaml"
-    canonical_token_mode: str = "matched"
-    canonical_cache_h5: str = "data/libero_canonical_cache_v3/canonical_tokens.h5"
-    canonical_shuffle_seed: int = 17
-    canonical_pool_size: int = 200
-    canonical_constant_pool_size: int = 100
     libero_parquet_dir: str = "data/libero/data/chunk-000"
     conditions: str = ""
     levels: str = ""
@@ -103,13 +94,6 @@ def _parse_args() -> Args:
         parser.add_argument("--skip-masking", action="store_true")
         parser.add_argument("--only-masking", action="store_true")
         parser.add_argument("--max-tasks", type=int, default=None)
-        parser.add_argument("--stage1-checkpoint", default="")
-        parser.add_argument("--stage1-config", default=Args.stage1_config)
-        parser.add_argument("--canonical-token-mode", default=Args.canonical_token_mode)
-        parser.add_argument("--canonical-cache-h5", default=Args.canonical_cache_h5)
-        parser.add_argument("--canonical-shuffle-seed", type=int, default=Args.canonical_shuffle_seed)
-        parser.add_argument("--canonical-pool-size", type=int, default=Args.canonical_pool_size)
-        parser.add_argument("--canonical-constant-pool-size", type=int, default=Args.canonical_constant_pool_size)
         parser.add_argument("--libero-parquet-dir", default=Args.libero_parquet_dir)
         parser.add_argument("--conditions", default=Args.conditions)
         parser.add_argument("--levels", default=Args.levels)
@@ -137,13 +121,6 @@ def _parse_args() -> Args:
             skip_masking=ns.skip_masking,
             only_masking=ns.only_masking,
             max_tasks=ns.max_tasks,
-            stage1_checkpoint=ns.stage1_checkpoint,
-            stage1_config=ns.stage1_config,
-            canonical_token_mode=ns.canonical_token_mode,
-            canonical_cache_h5=ns.canonical_cache_h5,
-            canonical_shuffle_seed=ns.canonical_shuffle_seed,
-            canonical_pool_size=ns.canonical_pool_size,
-            canonical_constant_pool_size=ns.canonical_constant_pool_size,
             libero_parquet_dir=ns.libero_parquet_dir,
             conditions=ns.conditions,
             levels=ns.levels,
@@ -321,7 +298,6 @@ def _run_nominal_tasks(evaluator: LIBEROPlusCameraEvaluator, n_trials_per_task: 
                     initial_state=initial_states[trial_index],
                     use_wrist_image=evaluator.use_wrist_image,
                     mask_scene=False,
-                    canonical_extractor=evaluator.canonical_extractor,
                     image_flip_mode=evaluator.image_flip_mode,
                 )
                 raw_rows.append(
@@ -418,11 +394,6 @@ def main(args: Args) -> None:
             "skip_masking": args.skip_masking,
             "only_masking": args.only_masking,
             "max_tasks": args.max_tasks,
-            "canonical_token_mode": args.canonical_token_mode,
-            "canonical_cache_h5": args.canonical_cache_h5,
-            "canonical_shuffle_seed": args.canonical_shuffle_seed,
-            "canonical_pool_size": args.canonical_pool_size,
-            "canonical_constant_pool_size": args.canonical_constant_pool_size,
             "libero_parquet_dir": args.libero_parquet_dir,
             "conditions": args.conditions,
             "levels": args.levels,
@@ -462,20 +433,6 @@ def main(args: Args) -> None:
     # the XLA cache for the masking sanity-check (which is small and one-shot).
     warmup_policy(policy, batch_size=args.n_trials_per_task, resolution=args.resolution)
 
-    canonical_extractor = None
-    if args.stage1_checkpoint:
-        print(f"[info] Loading Stage 1 canonical extractor from: {args.stage1_checkpoint}")
-        canonical_extractor = CanonicalInferenceExtractor(
-            stage1_checkpoint=args.stage1_checkpoint,
-            stage1_config=args.stage1_config,
-            token_mode=args.canonical_token_mode,
-            canonical_cache_h5=args.canonical_cache_h5,
-            shuffle_seed=args.canonical_shuffle_seed,
-            libero_parquet_dir=args.libero_parquet_dir,
-            token_pool_size=args.canonical_pool_size,
-            constant_pool_size=args.canonical_constant_pool_size,
-        )
-
     evaluator = LIBEROPlusCameraEvaluator(
         policy=policy,
         n_trials_per_task=args.n_trials_per_task,
@@ -484,7 +441,6 @@ def main(args: Args) -> None:
         base_seed=args.seed,
         use_wrist_image=args.use_wrist_image,
         progress_every=args.progress_every,
-        canonical_extractor=canonical_extractor,
         image_flip_mode=args.image_flip_mode,
     )
 

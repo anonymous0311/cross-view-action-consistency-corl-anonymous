@@ -288,7 +288,7 @@ class Block(nn.Module):
 
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()
-    canonical_dim: int = 0  # 0 = disabled; else = canonical token feature dim (e.g. 512)
+    canonical_dim: int = 0  # 0 = disabled; else auxiliary token feature dim
 
     @nn.compact
     def __call__(self, xs, kv_cache, positions, attn_mask, adarms_cond, deterministic=True, canonical_tokens=None):  # noqa: FBT002
@@ -312,10 +312,8 @@ class Block(nn.Module):
         xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, post_attn, gates, strict=True)]
         xs = sharding.activation_sharding_constraint(xs)
 
-        # Canonical cross-attention: action expert tokens (xs[1]) attend to canonical tokens.
-        # Positioned BEFORE the FFN so the FFN can post-process the canonically-enriched tokens.
-        # Order per spec: self_attn -> cross_attn(VLM) -> cross_attn_canonical -> FFN
-        # Only runs when canonical_dim > 0, canonical_tokens is provided, and xs[1] exists.
+        # Optional auxiliary-token cross-attention for action expert tokens.
+        # Disabled by all cross-view action consistency configs.
         if self.canonical_dim > 0 and canonical_tokens is not None and xs[1] is not None:
             x2 = xs[1]          # [B, T_action, D_action]
             D_action = self.configs[1].width
@@ -323,7 +321,7 @@ class Block(nn.Module):
             H = self.configs[1].head_dim
             dtype = x2.dtype
 
-            # Project canonical tokens from canonical_dim (512) → D_action (1024)
+            # Project auxiliary tokens to the action width.
             xavier = nn.initializers.xavier_uniform()
             canon = nn.Dense(D_action, use_bias=False, kernel_init=xavier, dtype=dtype, name="can_kv_proj")(
                 canonical_tokens.astype(dtype)
@@ -334,7 +332,7 @@ class Block(nn.Module):
             # permanent ∂loss/∂can_params = 0 dead zone — both multiplicands are 0 simultaneously.
             x2n, gate = RMSNorm(name="can_pre_norm")(x2, None)
 
-            # Q from action tokens; K, V from projected canonical tokens
+            # Q from action tokens; K, V from projected auxiliary tokens.
             q = nn.Dense(N_heads * H, use_bias=False, kernel_init=xavier, dtype=dtype, name="can_q")(x2n)   # [B, T, N*H]
             k = nn.Dense(N_heads * H, use_bias=False, kernel_init=xavier, dtype=dtype, name="can_k")(canon)  # [B, 128, N*H]
             v = nn.Dense(N_heads * H, use_bias=False, kernel_init=xavier, dtype=dtype, name="can_v")(canon)  # [B, 128, N*H]
@@ -343,7 +341,7 @@ class Block(nn.Module):
             k = einops.rearrange(k, "B S (N H) -> B S N H", N=N_heads)
             v = einops.rearrange(v, "B S (N H) -> B S N H", N=N_heads)
 
-            # Scaled dot-product attention (no mask — attend to all canonical tokens)
+            # Scaled dot-product attention over the auxiliary tokens.
             logits = jnp.einsum(
                 "BTNH,BSNH->BNTS", q, k, preferred_element_type=jnp.float32
             ) * (H ** -0.5)
@@ -351,7 +349,7 @@ class Block(nn.Module):
             encoded = jnp.einsum("BNTS,BSNH->BTNH", probs, v)
             encoded = einops.rearrange(encoded, "B T N H -> B T (N H)")
 
-            # Zero-init output projection so canonical cross-attn starts as identity
+            # Zero-init output projection so this path starts as identity.
             out_can = nn.Dense(
                 D_action, use_bias=False,
                 dtype=dtype,
@@ -443,7 +441,7 @@ class Module(nn.Module):
             nn.broadcast,  # adarms_cond
             nn.broadcast,  # deterministic
         )
-        # When canonical_dim > 0, broadcast canonical_tokens to every layer
+        # When canonical_dim > 0, broadcast auxiliary tokens to every layer
         in_axes = in_axes_base + (nn.broadcast,) if self.canonical_dim > 0 else in_axes_base
         self.layers = nn.scan(
             block_cls,

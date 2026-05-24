@@ -9,7 +9,6 @@ import numpy as np
 from openpi_client import image_tools
 
 from openpi.models import tokenizer as _tokenizer
-from openpi.shared import camera_bins as _camera_bins
 from openpi.shared import array_typing as at
 from openpi.shared import normalize as _normalize
 
@@ -336,49 +335,6 @@ class PadStatesAndActions(DataTransformFn):
         if "actions" in data:
             data["actions"] = pad_to_dim(data["actions"], self.model_action_dim, axis=-1)
         return data
-
-
-@dataclasses.dataclass(frozen=True)
-class CameraBinIDFromEpisodeIndex(DataTransformFn):
-    """Attach a precomputed camera bin id using the sample's episode index."""
-
-    episode_to_camera_bin_id: Mapping[int, int]
-    strict: bool = True
-
-    @classmethod
-    def from_parquet_assets(
-        cls,
-        *,
-        episode_params_path: str | None = None,
-        camera_bins_path: str | None = None,
-        camera_scaler_path: str | None = None,
-        strict: bool = True,
-    ) -> "CameraBinIDFromEpisodeIndex":
-        return cls(
-            dict(
-                _camera_bins.build_episode_camera_bin_lookup(
-                    episode_params_path or _camera_bins.DEFAULT_CAMERA_EPISODE_PARAMS_PATH,
-                    camera_bins_path or _camera_bins.DEFAULT_CAMERA_BINS_PATH,
-                    camera_scaler_path,
-                )
-            ),
-            strict=strict,
-        )
-
-    def __call__(self, data: DataDict) -> DataDict:
-        if "episode_index" not in data:
-            if self.strict:
-                raise ValueError('Cannot attach camera_bin_id without "episode_index".')
-            return data
-
-        episode_index = int(np.asarray(data["episode_index"]).item())
-        camera_bin_id = self.episode_to_camera_bin_id.get(episode_index)
-        if camera_bin_id is None:
-            if self.strict:
-                raise KeyError(f"{episode_index=} missing from camera bin lookup.")
-            return data
-
-        return {**data, "camera_bin_id": np.asarray(camera_bin_id, dtype=np.int32)}
 
 
 def flatten_dict(tree: at.PyTree) -> dict:

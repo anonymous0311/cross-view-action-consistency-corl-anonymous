@@ -14,20 +14,14 @@ from typing_extensions import override
 import tyro
 
 import openpi.models.model as _model
-import openpi.models.acb_vla_config as acb_vla_config
-import openpi.models.pi0_camera as pi0_camera
-import openpi.models.m6_anchor_config as m6_anchor_config
-import openpi.models.pi0_canonical_config as pi0_canonical_config
 import openpi.models.pi0_config as pi0_config
-import openpi.models.v4_cv_config as v4_cv_config
+import openpi.models.cross_view_action_consistency_config as cross_view_action_consistency_config
 import openpi.shared.nnx_utils as nnx_utils
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
-from canonical.data.libero_canonical_transform import LiberoCanonicalTokensTransform
-import canonical.data.sparse_subsets as sparse_subsets
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -178,28 +172,6 @@ class ModelTransformFactory(GroupFactory):
                         )
                     ],
                 )
-
-
-@dataclasses.dataclass(frozen=True)
-class M6AnchorPretrainModelTransformFactory(GroupFactory):
-    """Model transforms for M6-A, which consumes cached canonical tokens instead of RGB."""
-
-    default_prompt: str | None = None
-
-    def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
-        if model_config.model_type != ModelType.PI05:
-            raise ValueError("M6 anchor pretrain expects a pi0.5 model config")
-        assert isinstance(model_config, pi0_config.Pi0Config)
-        return _transforms.Group(
-            inputs=[
-                _transforms.InjectDefaultPrompt(self.default_prompt),
-                _transforms.TokenizePrompt(
-                    _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
-                    discrete_state_input=model_config.discrete_state_input,
-                ),
-                _transforms.PadStatesAndActions(model_config.action_dim),
-            ],
-        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -411,23 +383,15 @@ class LeRobotLiberoPlusDataConfig(DataConfigFactory):
     extra_delta_transform: bool = False
     use_wrist_image: bool = False
     video_backend: str | None = "pyav"
-    attach_camera_bin_id: bool | None = None
-    camera_bins_path: str | None = None
-    camera_scaler_path: str | None = None
-    camera_episode_params_path: str | None = None
     output_action_dim: int = 7
     scene_only_image_inputs: bool = False
     # Spec passed to ``make_bool_mask`` when ``extra_delta_transform`` is True.
-    # None preserves the legacy 7-dim LIBERO mask of (6, -1). Realman 8-dim
+    # None preserves the standard 7-dim LIBERO mask of (6, -1). Realman 8-dim
     # (7 joints delta + 1 absolute gripper) should pass (7, -1).
     delta_action_mask_spec: tuple[int, ...] | None = None
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        attach_camera_bin_id = self.attach_camera_bin_id
-        if attach_camera_bin_id is None:
-            attach_camera_bin_id = isinstance(model_config, (acb_vla_config.Pi0ACBConfig, pi0_camera.Pi0CameraConfig))
-
         repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform(
@@ -451,18 +415,6 @@ class LeRobotLiberoPlusDataConfig(DataConfigFactory):
         )
         data_transforms = _transforms.Group(
             inputs=[
-                *(
-                    [
-                        _transforms.CameraBinIDFromEpisodeIndex.from_parquet_assets(
-                            episode_params_path=self.camera_episode_params_path,
-                            camera_bins_path=self.camera_bins_path,
-                            camera_scaler_path=self.camera_scaler_path,
-                            strict=False,
-                        )
-                    ]
-                    if attach_camera_bin_id
-                    else []
-                ),
                 image_input_transform,
             ],
             outputs=[libero_policy.LiberoOutputs(action_dim=self.output_action_dim)],
@@ -489,12 +441,12 @@ class LeRobotLiberoPlusDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
-class LeRobotV4PairDataConfig(DataConfigFactory):
-    """Phase 0B same-state multiview pair data config.
+class LeRobotCrossViewPairDataConfig(DataConfigFactory):
+    """cross-view same-state multiview pair data config.
 
     The LeRobot dataset stores one row per simulator state with both the nominal
     and perturbed scene-camera images. This config preserves that pair axis for
-    the v4 cross-view loss while keeping the policy inference contract unchanged.
+    the cross-view loss while keeping the policy inference contract unchanged.
     """
 
     extra_delta_transform: bool = False
@@ -502,7 +454,7 @@ class LeRobotV4PairDataConfig(DataConfigFactory):
     video_backend: str | None = "pyav"
     output_action_dim: int = 7
     # Spec passed to ``make_bool_mask`` when ``extra_delta_transform`` is True.
-    # None preserves the legacy 7-dim LIBERO mask of (6, -1). Realman 8-dim
+    # None preserves the standard 7-dim LIBERO mask of (6, -1). Realman 8-dim
     # (7 joints delta + 1 absolute gripper) should pass (7, -1).
     delta_action_mask_spec: tuple[int, ...] | None = None
 
@@ -556,81 +508,12 @@ class LeRobotV4PairDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
-class LeRobotLiberoPlusCanonicalDataConfig(DataConfigFactory):
-    """LIBERO-plus scene-camera config augmented with pre-cached canonical tokens."""
+class LiberoCrossViewEvalDataConfig(DataConfigFactory):
+    """Eval-only single-view inference config for cross-view pair-trained models.
 
-    canonical_cache_h5: str = sparse_subsets.LIBERO_PLUS_CANONICAL_CACHE_H5_PATH
-    canonical_token_mode: Literal["matched", "constant", "shuffled"] = "matched"
-    canonical_constant_index: int = 0
-    canonical_shuffle_stride: int = 1009
-    canonical_shuffle_offset: int = 7919
-    use_wrist_image: bool = False
-    video_backend: str | None = "pyav"
-    attach_camera_bin_id: bool = True
-    camera_bins_path: str | None = None
-    camera_scaler_path: str | None = None
-    camera_episode_params_path: str | None = None
-
-    @override
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        repack_structure = {
-            "observation/image": "observation.images.front",
-            "observation/state": "observation.state",
-            "actions": "action",
-            "prompt": "task",
-            "canonical_tokens": "canonical_tokens",
-            "task_index": "task_index",
-            "episode_index": "episode_index",
-            "sample_index": "index",
-        }
-        repack_transform = _transforms.Group(inputs=[
-            LiberoCanonicalTokensTransform(
-                cache_h5=self.canonical_cache_h5,
-                token_mode=self.canonical_token_mode,
-                constant_index=self.canonical_constant_index,
-                shuffle_stride=self.canonical_shuffle_stride,
-                shuffle_offset=self.canonical_shuffle_offset,
-            ),
-            _transforms.RepackTransform(repack_structure),
-        ])
-
-        data_transforms = _transforms.Group(
-            inputs=[
-                *(
-                    [
-                        _transforms.CameraBinIDFromEpisodeIndex.from_parquet_assets(
-                            episode_params_path=self.camera_episode_params_path,
-                            camera_bins_path=self.camera_bins_path,
-                            camera_scaler_path=self.camera_scaler_path,
-                            strict=False,
-                        )
-                    ]
-                    if self.attach_camera_bin_id
-                    else []
-                ),
-                libero_policy.LiberoInputs(model_type=model_config.model_type, use_wrist_image=self.use_wrist_image),
-            ],
-            outputs=[libero_policy.LiberoOutputs()],
-        )
-        model_transforms = ModelTransformFactory()(model_config)
-
-        return dataclasses.replace(
-            self.create_base_config(assets_dirs, model_config),
-            repack_transforms=repack_transform,
-            data_transforms=data_transforms,
-            model_transforms=model_transforms,
-            action_sequence_keys=("action",),
-            video_backend=self.video_backend,
-        )
-
-
-@dataclasses.dataclass(frozen=True)
-class LiberoPhase0BEvalDataConfig(DataConfigFactory):
-    """Eval-only single-view inference config for Phase 0B pair-trained models.
-
-    Phase 0B training batches carry a nominal/perturbed pair axis, but LIBERO-plus
+    cross-view training batches carry a nominal/perturbed pair axis, but LIBERO-plus
     rollout inference supplies one scene-camera observation at a time. This config
-    keeps the Phase 0B model and norm-stat asset contract while using the regular
+    keeps the cross-view model and norm-stat asset contract while using the regular
     single-view LIBERO policy inputs at eval time.
     """
 
@@ -662,88 +545,6 @@ class LiberoPhase0BEvalDataConfig(DataConfigFactory):
             self.create_base_config(assets_dirs, model_config),
             data_transforms=data_transforms,
             model_transforms=model_transforms,
-        )
-
-
-@dataclasses.dataclass(frozen=True)
-class LeRobotLiberoCanonicalDataConfig(DataConfigFactory):
-    """LIBERO data config augmented with pre-cached canonical tokens for M5 training.
-
-    Runs LiberoCanonicalTokensTransform first (needs raw LeRobot `index` field),
-    then RepackTransform that also preserves `canonical_tokens`. LiberoInputs passes
-    canonical_tokens through into the model Observation.
-    """
-
-    canonical_cache_h5: str = "data/libero_canonical_cache/canonical_tokens.h5"
-    canonical_token_mode: Literal["matched", "constant", "shuffled"] = "matched"
-    canonical_constant_index: int = 0
-    canonical_shuffle_stride: int = 1009
-    canonical_shuffle_offset: int = 7919
-    include_m6_controls: bool = False
-    anchor_pretrain_fast_path: bool = False
-    use_wrist_image: bool = False
-    video_backend: str | None = "pyav"
-
-    @override
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        model_type = model_config.model_type
-
-        # LiberoCanonicalTokensTransform must run BEFORE RepackTransform so it can
-        # read the raw LeRobot global `index` field. canonical_tokens is then
-        # included in the repack structure to survive the key remapping.
-        repack_structure = {
-            "observation/state": "state",
-            "actions": "actions",
-            "prompt": "prompt",
-            "canonical_tokens": "canonical_tokens",
-            "task_index": "task_index",
-            "episode_index": "episode_index",
-            "sample_index": "index",
-            **(
-                {
-                    "canonical_tokens_neg": "canonical_tokens_neg",
-                    "canonical_tokens_mean": "canonical_tokens_mean",
-                }
-                if self.include_m6_controls
-                else {}
-            ),
-        }
-        if not self.anchor_pretrain_fast_path:
-            repack_structure = {"observation/image": "image", **repack_structure}
-        repack_transform = _transforms.Group(inputs=[
-            LiberoCanonicalTokensTransform(
-                cache_h5=self.canonical_cache_h5,
-                token_mode=self.canonical_token_mode,
-                constant_index=self.canonical_constant_index,
-                shuffle_stride=self.canonical_shuffle_stride,
-                shuffle_offset=self.canonical_shuffle_offset,
-                include_m6_controls=self.include_m6_controls,
-            ),
-            _transforms.RepackTransform(repack_structure),
-        ])
-
-        data_transforms = _transforms.Group(
-            inputs=[
-                libero_policy.LiberoAnchorInputs()
-                if self.anchor_pretrain_fast_path
-                else libero_policy.LiberoInputs(model_type=model_type, use_wrist_image=self.use_wrist_image)
-            ],
-            outputs=[libero_policy.LiberoOutputs()],
-        )
-
-        model_transforms = (
-            M6AnchorPretrainModelTransformFactory()(model_config)
-            if self.anchor_pretrain_fast_path
-            else ModelTransformFactory()(model_config)
-        )
-
-        return dataclasses.replace(
-            self.create_base_config(assets_dirs, model_config),
-            repack_transforms=repack_transform,
-            data_transforms=data_transforms,
-            model_transforms=model_transforms,
-            action_sequence_keys=("actions",),
-            video_backend=self.video_backend,
         )
 
 
@@ -1010,46 +811,19 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
 
-_PHASE_B_SELECTED_N_DET = 8
-# PLACEHOLDER — update after 4.B stability sweep (lambda_cam_max ∈ {0.02, 0.05, 0.1}).
-# Pick the largest value that passes the 4.B.2 gate (camera_cls_acc smooth decay,
-# b_can_feat_std in [0.5, 2.0], L_flow ≤ 1.3×no-GRL). All Phase B main-grid configs
-# (Runs 2–7) read this constant; change it once here after 4.B decision.
-_PHASE_B_GRL_LAMBDA_CAM_MAX = 0.05
-_PHASE_B_TEACHER_LAMBDA_Z_MAX = 0.5
-_PHASE_B_COV_LAMBDA = 1e-3
-_PHASE_B_DIFF_LAMBDA = 1e-3
-_PHASE_B_BATCH_SIZE = 384
-_PHASE_B_NUM_WORKERS = 24
-_PHASE_B_NUM_TRAIN_STEPS = 30_000
-_PHASE_B_SAVE_INTERVAL = 1_000
-_SPARSE_PRIMARY_SUBSET = sparse_subsets.KCENTER_PRIMARY_30
-_SPARSE_RANDOM_CONTROL_SUBSET = sparse_subsets.RANDOM_CONTROL_30
-
-# Phase B v3 constants — Split Discriminator + KL prior confusion (corrective patch)
-# Replaces GRL+CE which exhibited adversarial mode collapse at step 2500 of v1.
-_PHASE_B_HEAD_LAMBDA = 1.0               # L_head: constant classifier training weight (v3 v1.0)
-_PHASE_B_HEAD_LAMBDA_V3_1 = 2.0          # L_head: raised per plan §5.5 after v3 v1.0 acc=0.237 < 0.30 at step 500
-_PHASE_B_FEAT_LAMBDA_MAX = 0.03          # L_feat: KL confusion max; bounded by log(K)≈2.08
-_PHASE_B_VAR_DET_LAMBDA = 0.01           # L_var(b_det): anti-extinction safety net weight
-_PHASE_B_GAMMA_DET = 0.3                 # b_det std hinge threshold (n_det=8 has lower budget than n_can=32)
-_PHASE_B_DIFF_LAMBDA_MAX = 5e-3          # L_diff: sigmoid warmup max (replaces flat lambda_diff for v3 configs)
-_PHASE_B_GATE_STEEPNESS = 10.0           # sigmoid(10*(stopgrad(b_det_std) - gamma_det)) gate
-_PHASE_B_CAMERA_PRIOR_PATH = "assets/camera_prior_kcenter30.npy"  # run fit_camera_prior.py first
-
-_PHASE0B_MATCHED_REPO_ID = "data/libero_multiview_lerobot"
-_PHASE0B_WRONG_REPO_ID = "data/libero_multiview_lerobot_wrong"
-_PHASE0B_NORM_ASSET_ID = "anonymous/libero_multiview_lerobot"
-_PHASE0B_NUM_TRAIN_STEPS = 10_000
+_CROSS_VIEW_MATCHED_REPO_ID = "data/libero_multiview_lerobot"
+_CROSS_VIEW_WRONG_REPO_ID = "data/libero_multiview_lerobot_wrong"
+_CROSS_VIEW_NORM_ASSET_ID = "anonymous/libero_multiview_lerobot"
+_CROSS_VIEW_NUM_TRAIN_STEPS = 10_000
 # Pair batch 192 means 384 effective image/action forwards because each sample
 # contains nominal and perturbed scene-camera views.
-_PHASE0B_PAIR_BATCH_SIZE = 192
-_PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE = 2 * _PHASE0B_PAIR_BATCH_SIZE
-_PHASE0B_NUM_WORKERS = 24
-_PHASE0B_SAVE_INTERVAL = 2_000
-_PHASE0B_COMMON_ASSETS = AssetsConfig(
-    assets_dir="assets/pi05_v4_pair_fm_only",
-    asset_id=_PHASE0B_NORM_ASSET_ID,
+_CROSS_VIEW_PAIR_BATCH_SIZE = 192
+_CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE = 2 * _CROSS_VIEW_PAIR_BATCH_SIZE
+_CROSS_VIEW_NUM_WORKERS = 24
+_CROSS_VIEW_SAVE_INTERVAL = 2_000
+_CROSS_VIEW_COMMON_ASSETS = AssetsConfig(
+    assets_dir="assets/pi05_cross_view_fm_only",
+    asset_id=_CROSS_VIEW_NORM_ASSET_ID,
 )
 
 _REALMAN_TASK1_PAIR_REPO_ID = "data/real_robot/task1_pair"
@@ -1058,10 +832,10 @@ _REALMAN_TASK123_PAIR_REPO_ID = "data/real_robot/task123_pair"
 _REALMAN_TASK123_NORM_ASSET_ID = "anonymous/realman_task123_corl"
 _REALMAN_TASK1_NUM_TRAIN_STEPS = 10_000
 _REALMAN_TASK123_SMALL_NUM_TRAIN_STEPS = 5_000
-_REALMAN_TASK1_PAIR_BATCH_SIZE = _PHASE0B_PAIR_BATCH_SIZE
+_REALMAN_TASK1_PAIR_BATCH_SIZE = _CROSS_VIEW_PAIR_BATCH_SIZE
 _REALMAN_TASK1_EFFECTIVE_VIEW_BATCH_SIZE = 2 * _REALMAN_TASK1_PAIR_BATCH_SIZE
-_REALMAN_TASK1_NUM_WORKERS = _PHASE0B_NUM_WORKERS
-_REALMAN_TASK1_SAVE_INTERVAL = _PHASE0B_SAVE_INTERVAL
+_REALMAN_TASK1_NUM_WORKERS = _CROSS_VIEW_NUM_WORKERS
+_REALMAN_TASK1_SAVE_INTERVAL = _CROSS_VIEW_SAVE_INTERVAL
 _REALMAN_TASK123_SMALL_SAVE_INTERVAL = 1_000
 _REALMAN_TASK1_TRAIN_EPISODES = tuple(range(128))
 _REALMAN_TASK1_VAL_EPISODES = tuple(range(128, 144))
@@ -1077,11 +851,11 @@ _REALMAN_TASK123_VAL_EPISODES = (
 )
 _REALMAN_TASK123_ALL_EPISODES = tuple(range(314))
 _REALMAN_TASK1_COMMON_ASSETS = AssetsConfig(
-    assets_dir="assets/pi05_realman_task1_b6b",
+    assets_dir="assets/pi05_realman_task1_cross_view_action_consistency",
     asset_id=_REALMAN_TASK1_NORM_ASSET_ID,
 )
 _REALMAN_TASK123_COMMON_ASSETS = AssetsConfig(
-    assets_dir="assets/pi05_realman_task123_b6b",
+    assets_dir="assets/pi05_realman_task123_cross_view_action_consistency",
     asset_id=_REALMAN_TASK123_NORM_ASSET_ID,
 )
 _REALMAN_TASK123_PI05_ALL_ASSETS = AssetsConfig(
@@ -1093,7 +867,7 @@ _REALMAN_TASK123_PI05_ALL_ASSETS = AssetsConfig(
 # scripts/real_robot/compute_realman_pair_norm_stats_fast_delta.py.
 _REALMAN_TASK123_DELTA_NORM_ASSET_ID = "anonymous/realman_task123_corl_delta"
 _REALMAN_TASK123_DELTA_ASSETS = AssetsConfig(
-    assets_dir="assets/pi05_realman_task123_b6b_delta",
+    assets_dir="assets/pi05_realman_task123_cross_view_action_consistency_delta",
     asset_id=_REALMAN_TASK123_DELTA_NORM_ASSET_ID,
 )
 # 8-dim mask: first 7 joints delta, gripper absolute.
@@ -1111,20 +885,11 @@ def _realman_pi05_action_expert_only_freeze_filter() -> nnx.filterlib.Filter:
     )
 
 
-def _phase_b_schedule() -> _optimizer.CosineDecaySchedule:
-    return _optimizer.CosineDecaySchedule(
-        warmup_steps=1_000,
-        peak_lr=5e-5,
-        decay_steps=30_000,
-        decay_lr=5e-6,
-    )
-
-
-def _phase_b_optimizer() -> _optimizer.AdamW:
+def _cross_view_optimizer() -> _optimizer.AdamW:
     return _optimizer.AdamW(clip_gradient_norm=1.0)
 
 
-def _phase0b_schedule() -> _optimizer.CosineDecaySchedule:
+def _cross_view_schedule() -> _optimizer.CosineDecaySchedule:
     return _optimizer.CosineDecaySchedule(
         warmup_steps=1_000,
         peak_lr=5e-5,
@@ -1142,10 +907,10 @@ def _realman_small_action_expert_schedule() -> _optimizer.CosineDecaySchedule:
     )
 
 
-def _phase0b_pair_data(repo_id: str) -> LeRobotV4PairDataConfig:
-    return LeRobotV4PairDataConfig(
+def _cross_view_pair_data(repo_id: str) -> LeRobotCrossViewPairDataConfig:
+    return LeRobotCrossViewPairDataConfig(
         repo_id=repo_id,
-        assets=_PHASE0B_COMMON_ASSETS,
+        assets=_CROSS_VIEW_COMMON_ASSETS,
         base_config=DataConfig(prompt_from_task=True),
         extra_delta_transform=False,
         use_wrist_image=False,
@@ -1153,10 +918,10 @@ def _phase0b_pair_data(repo_id: str) -> LeRobotV4PairDataConfig:
     )
 
 
-def _phase0b_eval_data() -> LiberoPhase0BEvalDataConfig:
-    return LiberoPhase0BEvalDataConfig(
-        repo_id=_PHASE0B_MATCHED_REPO_ID,
-        assets=_PHASE0B_COMMON_ASSETS,
+def _cross_view_eval_data() -> LiberoCrossViewEvalDataConfig:
+    return LiberoCrossViewEvalDataConfig(
+        repo_id=_CROSS_VIEW_MATCHED_REPO_ID,
+        assets=_CROSS_VIEW_COMMON_ASSETS,
         base_config=DataConfig(prompt_from_task=True),
         extra_delta_transform=False,
         use_wrist_image=False,
@@ -1166,8 +931,8 @@ def _phase0b_eval_data() -> LiberoPhase0BEvalDataConfig:
 def _realman_task1_pair_data(
     *,
     episodes: Sequence[int] = _REALMAN_TASK1_TRAIN_EPISODES,
-) -> LeRobotV4PairDataConfig:
-    return LeRobotV4PairDataConfig(
+) -> LeRobotCrossViewPairDataConfig:
+    return LeRobotCrossViewPairDataConfig(
         repo_id=_REALMAN_TASK1_PAIR_REPO_ID,
         dataset_episodes=episodes,
         assets=_REALMAN_TASK1_COMMON_ASSETS,
@@ -1182,8 +947,8 @@ def _realman_task1_pair_data(
 def _realman_task123_pair_data(
     *,
     episodes: Sequence[int] = _REALMAN_TASK123_TRAIN_EPISODES,
-) -> LeRobotV4PairDataConfig:
-    return LeRobotV4PairDataConfig(
+) -> LeRobotCrossViewPairDataConfig:
+    return LeRobotCrossViewPairDataConfig(
         repo_id=_REALMAN_TASK123_PAIR_REPO_ID,
         dataset_episodes=episodes,
         assets=_REALMAN_TASK123_COMMON_ASSETS,
@@ -1198,14 +963,14 @@ def _realman_task123_pair_data(
 def _realman_task123_pair_data_delta(
     *,
     episodes: Sequence[int] = _REALMAN_TASK123_TRAIN_EPISODES,
-) -> LeRobotV4PairDataConfig:
+) -> LeRobotCrossViewPairDataConfig:
     """Pair training data with delta-joint actions (gripper absolute).
 
     Subtracts current state from joints 0..6 of every action in the chunk; this
     breaks the ``action ≈ state`` shortcut that absolute-joint training induced
     on the Realman dataset.
     """
-    return LeRobotV4PairDataConfig(
+    return LeRobotCrossViewPairDataConfig(
         repo_id=_REALMAN_TASK123_PAIR_REPO_ID,
         dataset_episodes=episodes,
         assets=_REALMAN_TASK123_DELTA_ASSETS,
@@ -1232,7 +997,6 @@ def _realman_task123_single_view_data_delta(
         delta_action_mask_spec=_REALMAN_TASK123_DELTA_MASK_SPEC,
         use_wrist_image=False,
         video_backend="pyav",
-        attach_camera_bin_id=False,
         output_action_dim=8,
         scene_only_image_inputs=True,
     )
@@ -1250,7 +1014,6 @@ def _realman_task1_single_view_data(
         extra_delta_transform=False,
         use_wrist_image=False,
         video_backend="pyav",
-        attach_camera_bin_id=False,
         output_action_dim=8,
         scene_only_image_inputs=True,
     )
@@ -1268,7 +1031,6 @@ def _realman_task123_single_view_data(
         extra_delta_transform=False,
         use_wrist_image=False,
         video_backend="pyav",
-        attach_camera_bin_id=False,
         output_action_dim=8,
         scene_only_image_inputs=True,
     )
@@ -1283,31 +1045,30 @@ def _realman_task123_pi05_all_single_view_data() -> LeRobotLiberoPlusDataConfig:
         extra_delta_transform=False,
         use_wrist_image=False,
         video_backend="pyav",
-        attach_camera_bin_id=False,
         output_action_dim=8,
         scene_only_image_inputs=True,
     )
 
 
-def _phase0b_v4_config(
+def _cross_view_model_config(
     lambda_cv: float,
     *,
-    total_train_steps: int = _PHASE0B_NUM_TRAIN_STEPS,
+    total_train_steps: int = _CROSS_VIEW_NUM_TRAIN_STEPS,
     action_horizon: int = 10,
     cv_action_dim: int = 7,
     cv_pair_mode: str = "matched",
     cv_loss_mode: str = "symmetric",
     cv_num_samples: int = 1,
     cv_stopgrad_anchor: bool = True,
-    cv_time_distribution: str = "legacy",
+    cv_time_distribution: str = "beta_1p5_1",
     cv_eps_shared_across_views: bool = True,
     cv_average_over_samples: bool = True,
     cv_warmup_start_fraction: float = 0.10,
     cv_warmup_end_fraction: float = 0.30,
     pair_spatial_aug_mode: str = "current",
     pair_photometric_aug_mode: str = "current",
-) -> v4_cv_config.Pi0V4CVConfig:
-    return v4_cv_config.Pi0V4CVConfig(
+) -> cross_view_action_consistency_config.Pi0CrossViewActionConsistencyConfig:
+    return cross_view_action_consistency_config.Pi0CrossViewActionConsistencyConfig(
         pi05=True,
         action_horizon=action_horizon,
         discrete_state_input=False,
@@ -1328,13 +1089,13 @@ def _phase0b_v4_config(
     )
 
 
-def _phase0b_b6b_ablation_model(
+def _method_ablation_model(
     *,
     cv_num_samples: int,
     cv_stopgrad_anchor: bool,
     cv_time_distribution: str,
-) -> v4_cv_config.Pi0V4CVConfig:
-    return _phase0b_v4_config(
+) -> cross_view_action_consistency_config.Pi0CrossViewActionConsistencyConfig:
+    return _cross_view_model_config(
         lambda_cv=0.10,
         cv_loss_mode="multi_sample_asymmetric",
         cv_num_samples=cv_num_samples,
@@ -1347,20 +1108,20 @@ def _phase0b_b6b_ablation_model(
     )
 
 
-def _phase0b_b6b_ablation_metadata(
+def _method_ablation_metadata(
     *,
-    phase_step: str,
+    method_variant: str,
     ablation_axis: str,
     cv_num_samples: int,
     cv_stopgrad_anchor: bool,
     cv_time_distribution: str,
     comparison_role: str,
-    baseline_reference: str = "pi05_v4_pair_multi_sample_bilateral_cross_view010_action_biased_time",
+    baseline_reference: str = "pi05_cross_view_action_consistency",
 ) -> dict[str, Any]:
     cv_gradient_mode = "stop_gradient_nominal_anchor" if cv_stopgrad_anchor else "bilateral"
     return {
-        "phase": "B-independent-ablation",
-        "phase_step": phase_step,
+        "experiment_group": "cross_view_action_consistency_ablation",
+        "method_variant": method_variant,
         "pair_type": "matched",
         "ablation_axis": ablation_axis,
         "comparison_role": comparison_role,
@@ -1375,45 +1136,45 @@ def _phase0b_b6b_ablation_metadata(
         "cv_eps_shared_across_views": True,
         "pair_spatial_aug_mode": "none",
         "pair_photometric_aug_mode": "independent",
-        "matched_reference": "pi05_v4_pair_cv010_no_spatial_aug",
+        "matched_reference": "pi05_cross_view_single_sample",
         "ablation_baseline": baseline_reference,
-        "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-        "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+        "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+        "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
         "primary_lambda": True,
     }
 
 
-def _phase0b_b6b_ablation_train_config(
+def _method_ablation_train_config(
     name: str,
     *,
-    phase_step: str,
+    method_variant: str,
     ablation_axis: str,
     cv_num_samples: int,
     cv_stopgrad_anchor: bool,
     cv_time_distribution: str,
     comparison_role: str,
-    baseline_reference: str = "pi05_v4_pair_multi_sample_bilateral_cross_view010_action_biased_time",
+    baseline_reference: str = "pi05_cross_view_action_consistency",
 ) -> TrainConfig:
     return TrainConfig(
         name=name,
-        model=_phase0b_b6b_ablation_model(
+        model=_method_ablation_model(
             cv_num_samples=cv_num_samples,
             cv_stopgrad_anchor=cv_stopgrad_anchor,
             cv_time_distribution=cv_time_distribution,
         ),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
-        policy_metadata=_phase0b_b6b_ablation_metadata(
-            phase_step=phase_step,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
+        policy_metadata=_method_ablation_metadata(
+            method_variant=method_variant,
             ablation_axis=ablation_axis,
             cv_num_samples=cv_num_samples,
             cv_stopgrad_anchor=cv_stopgrad_anchor,
@@ -1424,32 +1185,32 @@ def _phase0b_b6b_ablation_train_config(
     )
 
 
-def _phase0b_b6b_ablation_eval_config(
+def _method_ablation_eval_config(
     train_config_name: str,
     *,
-    phase_step: str,
+    method_variant: str,
     ablation_axis: str,
     cv_num_samples: int,
     cv_stopgrad_anchor: bool,
     cv_time_distribution: str,
     comparison_role: str,
-    baseline_reference: str = "pi05_v4_pair_multi_sample_bilateral_cross_view010_action_biased_time",
+    baseline_reference: str = "pi05_cross_view_action_consistency",
 ) -> TrainConfig:
     return TrainConfig(
         name=f"{train_config_name}_eval",
-        model=_phase0b_b6b_ablation_model(
+        model=_method_ablation_model(
             cv_num_samples=cv_num_samples,
             cv_stopgrad_anchor=cv_stopgrad_anchor,
             cv_time_distribution=cv_time_distribution,
         ),
-        data=_phase0b_eval_data(),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            **_phase0b_b6b_ablation_metadata(
-                phase_step=phase_step,
+            **_method_ablation_metadata(
+                method_variant=method_variant,
                 ablation_axis=ablation_axis,
                 cv_num_samples=cv_num_samples,
                 cv_stopgrad_anchor=cv_stopgrad_anchor,
@@ -1461,199 +1222,6 @@ def _phase0b_b6b_ablation_eval_config(
             "train_config": train_config_name,
             "inference_inputs": "single_scene_rgb_language_state",
         },
-    )
-
-
-def _phase_b_sparse_data_config(
-    subset: sparse_subsets.SparseSubsetSpec,
-    *,
-    attach_camera_bin_id: bool | None = None,
-) -> LeRobotLiberoPlusDataConfig:
-    return LeRobotLiberoPlusDataConfig(
-        repo_id=subset.repo_id,
-        dataset_episodes=subset.episode_indices,
-        base_config=DataConfig(prompt_from_task=True),
-        extra_delta_transform=False,
-        use_wrist_image=False,
-        video_backend="pyav",
-        attach_camera_bin_id=attach_camera_bin_id,
-        camera_bins_path=subset.camera_bins_path,
-        camera_scaler_path=subset.camera_scaler_path,
-        camera_episode_params_path=subset.metadata_path,
-    )
-
-
-def _phase_b_sparse_canonical_data_config(
-    subset: sparse_subsets.SparseSubsetSpec,
-    *,
-    canonical_token_mode: Literal["matched", "constant", "shuffled"] = "matched",
-    attach_camera_bin_id: bool = True,
-) -> LeRobotLiberoPlusCanonicalDataConfig:
-    return LeRobotLiberoPlusCanonicalDataConfig(
-        repo_id=subset.repo_id,
-        dataset_episodes=subset.episode_indices,
-        base_config=DataConfig(prompt_from_task=True),
-        canonical_cache_h5=sparse_subsets.LIBERO_PLUS_CANONICAL_CACHE_H5_PATH,
-        canonical_token_mode=canonical_token_mode,
-        use_wrist_image=False,
-        video_backend="pyav",
-        attach_camera_bin_id=attach_camera_bin_id,
-        camera_bins_path=subset.camera_bins_path,
-        camera_scaler_path=subset.camera_scaler_path,
-        camera_episode_params_path=subset.metadata_path,
-    )
-
-
-def _phase_b_acb_model(
-    *,
-    n_det: int,
-    lambda_cam_max: float = 0.0,
-    lambda_z_max: float = 0.0,
-    teacher_mode: Literal["matched", "shuffled", "constant", "episode_random"] = "matched",
-) -> acb_vla_config.Pi0ACBConfig:
-    return acb_vla_config.Pi0ACBConfig(
-        pi05=True,
-        action_horizon=10,
-        discrete_state_input=False,
-        n_can=32,
-        n_det=n_det,
-        bottleneck_num_heads=8,
-        bottleneck_num_layers=2,
-        lambda_z=0.0,
-        lambda_var=0.01,
-        lambda_cam=0.0,
-        lambda_cam_max=lambda_cam_max,
-        lambda_z_max=lambda_z_max,
-        lambda_cov=_PHASE_B_COV_LAMBDA,
-        lambda_diff=0.0 if n_det == 0 else _PHASE_B_DIFF_LAMBDA,
-        teacher_mode=teacher_mode,
-        camera_bin_k=8,
-        total_train_steps=_PHASE_B_NUM_TRAIN_STEPS,
-        shortcut_mode="hard",
-    )
-
-
-def _phase_b_acb_model_v3(n_det: int) -> acb_vla_config.Pi0ACBConfig:
-    """Phase B v3 model: split discriminator + KL prior confusion (replaces GRL+CE).
-
-    Key differences from _phase_b_acb_model (v1):
-    - lambda_cam_max = 0: GRL path disabled
-    - lambda_head = 1.0: classifier trains on stopgrad(b_can)
-    - lambda_feat_max = 0.03: KL confusion with sigmoid warmup (bounded by log(K)≈2.08)
-    - lambda_var_det = 0.01: b_det anti-extinction safety net
-    - lambda_diff = 0.0, lambda_diff_max = 5e-3: v3 gated diff loss with warmup
-    All other fields (n_can, lambda_var, lambda_cov, lambda_z_max, etc.) are unchanged.
-    """
-    return acb_vla_config.Pi0ACBConfig(
-        pi05=True,
-        action_horizon=10,
-        discrete_state_input=False,
-        n_can=32,
-        n_det=n_det,
-        bottleneck_num_heads=8,
-        bottleneck_num_layers=2,
-        lambda_z=0.0,
-        lambda_var=0.01,
-        lambda_cam=0.0,
-        lambda_cam_max=0.0,                             # v3: GRL disabled
-        lambda_z_max=_PHASE_B_TEACHER_LAMBDA_Z_MAX,
-        lambda_cov=_PHASE_B_COV_LAMBDA,
-        lambda_diff=0.0,                                # v3: replaced by lambda_diff_max gated path
-        teacher_mode="matched",
-        camera_bin_k=8,
-        total_train_steps=_PHASE_B_NUM_TRAIN_STEPS,
-        shortcut_mode="hard",
-        # v3-specific fields:
-        lambda_head=_PHASE_B_HEAD_LAMBDA,
-        lambda_feat_max=_PHASE_B_FEAT_LAMBDA_MAX,
-        camera_prior_path=_PHASE_B_CAMERA_PRIOR_PATH,
-        lambda_var_det=_PHASE_B_VAR_DET_LAMBDA,
-        gamma_det=_PHASE_B_GAMMA_DET,
-        lambda_diff_max=_PHASE_B_DIFF_LAMBDA_MAX,
-        gate_steepness=_PHASE_B_GATE_STEEPNESS,
-    )
-
-
-def _phase_b_acb_model_v3_1(n_det: int) -> acb_vla_config.Pi0ACBConfig:
-    """Phase B v3.1 model: corrective re-launch after v3 v1.0 step 500 health gate failed.
-
-    v3 v1.0 (sparse_acb_full_v3) at step 500 metrics:
-      - cam_cls_acc_head = 0.237 (gate ≥ 0.40 → FAIL)
-      - loss_cam_feat_kl_raw = 0.0034 (gate ∈ [0.5, log K] → FAIL)
-      - b_det_feat_std = 0.746 falling at -2.5%/100 step (≈ 2× v1's rate)
-      - loss_flow = 0.0252 (healthy)
-
-    Root cause (from first-principles + plan §5.5 diagnosis matrix):
-      - λ_feat sigmoid warmup is redundant: KL itself naturally bootstraps from
-        ~0 as the classifier learns; the additional sigmoid warmup unnecessarily
-        delays the mechanism, leaving b_can untouched while b_det collapses.
-      - λ_head=1.0 is too low: classifier learns ~+4pp/100 step from random;
-        plan §5.5 prescribes raising to 2.0 when cam_cls_acc_head < 0.30 at step 500.
-
-    Differences from _phase_b_acb_model_v3:
-      - lambda_head: 1.0 → 2.0
-      - lambda_feat_warmup: True → False (constant λ_feat = 0.03 from step 0)
-    All other fields unchanged.
-    """
-    return acb_vla_config.Pi0ACBConfig(
-        pi05=True,
-        action_horizon=10,
-        discrete_state_input=False,
-        n_can=32,
-        n_det=n_det,
-        bottleneck_num_heads=8,
-        bottleneck_num_layers=2,
-        lambda_z=0.0,
-        lambda_var=0.01,
-        lambda_cam=0.0,
-        lambda_cam_max=0.0,
-        lambda_z_max=_PHASE_B_TEACHER_LAMBDA_Z_MAX,
-        lambda_cov=_PHASE_B_COV_LAMBDA,
-        lambda_diff=0.0,
-        teacher_mode="matched",
-        camera_bin_k=8,
-        total_train_steps=_PHASE_B_NUM_TRAIN_STEPS,
-        shortcut_mode="hard",
-        # v3-specific fields (with v3.1 corrections):
-        lambda_head=_PHASE_B_HEAD_LAMBDA_V3_1,           # 2.0 (was 1.0 in v3)
-        lambda_feat_max=_PHASE_B_FEAT_LAMBDA_MAX,
-        lambda_feat_warmup=False,                         # constant (was sigmoid in v3)
-        camera_prior_path=_PHASE_B_CAMERA_PRIOR_PATH,
-        lambda_var_det=_PHASE_B_VAR_DET_LAMBDA,
-        gamma_det=_PHASE_B_GAMMA_DET,
-        lambda_diff_max=_PHASE_B_DIFF_LAMBDA_MAX,
-        gate_steepness=_PHASE_B_GATE_STEEPNESS,
-    )
-
-
-def _phase_b_train_config(
-    name: str,
-    *,
-    model: _model.BaseModelConfig,
-    data: DataConfigFactory,
-    missing_regex: str | None = ".*(bottleneck|z_proj|cam_adv|proj_cov|proj_diff|camera_prior).*",
-) -> TrainConfig:
-    if missing_regex is None:
-        weight_loader = weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params"
-        )
-    else:
-        weight_loader = weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=missing_regex,
-        )
-    return TrainConfig(
-        name=name,
-        model=model,
-        data=data,
-        batch_size=_PHASE_B_BATCH_SIZE,
-        lr_schedule=_phase_b_schedule(),
-        optimizer=_phase_b_optimizer(),
-        ema_decay=0.999,
-        num_workers=_PHASE_B_NUM_WORKERS,
-        weight_loader=weight_loader,
-        num_train_steps=_PHASE_B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE_B_SAVE_INTERVAL,
     )
 
 
@@ -1910,133 +1478,132 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     # ---------------------------------------------------------------------------
-    # Phase 0B v4-lite — same-state cross-view action-flow consistency.
+    # cross-view action consistency sweep: same-state cross-view action-flow consistency.
     #
     # Data rows contain two scene-camera views of the same simulator state. The
     # dataloader batch size is pair count; effective view forwards are 2x larger.
-    # Main screening plan: run these configs to 10k, with 5k as early-kill gate.
+    # These sweep configs are included for ablations and controls.
     # ---------------------------------------------------------------------------
     TrainConfig(
-        name="pi05_v4_pair_fm_only",
-        model=_phase0b_v4_config(lambda_cv=0.0),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        name="pi05_cross_view_fm_only",
+        model=_cross_view_model_config(lambda_cv=0.0),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "0B",
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "experiment_group": "cross_view_lambda_sweep",
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
             "fm_loss": "0.5 * (FM_nominal + FM_perturbed)",
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_cv005",
-        model=_phase0b_v4_config(lambda_cv=0.05),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        name="pi05_cross_view_lambda005",
+        model=_cross_view_model_config(lambda_cv=0.05),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "pair_type": "matched",
             "lambda_cv_target": 0.05,
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_cv010",
-        model=_phase0b_v4_config(lambda_cv=0.10),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        name="pi05_cross_view_lambda010",
+        model=_cross_view_model_config(lambda_cv=0.10),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        # num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        num_train_steps= 30000,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "pair_type": "matched",
             "lambda_cv_target": 0.10,
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_cv010_no_spatial_aug",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_single_sample",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "pair_type": "matched",
             "lambda_cv_target": 0.10,
             "pair_spatial_aug_mode": "none",
             "pair_photometric_aug_mode": "independent",
-            "matched_reference": "pi05_v4_pair_cv010",
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "matched_reference": "pi05_cross_view_lambda010",
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_multi_sample_asymmetric_cross_view005",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_multisample_stopgrad_lambda005",
+        model=_cross_view_model_config(
             lambda_cv=0.05,
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
             cv_stopgrad_anchor=True,
-            cv_time_distribution="legacy",
+            cv_time_distribution="beta_1p5_1",
             cv_eps_shared_across_views=True,
             cv_average_over_samples=True,
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "B",
+            "experiment_group": "cross_view_multisample",
             "pair_type": "matched",
             "lambda_cv_target": 0.05,
             "cv_loss_mode": "multi_sample_asymmetric",
@@ -2044,41 +1611,41 @@ _CONFIGS = [
             "cv_anchor_view": "nominal",
             "cv_student_view": "perturbed",
             "cv_stopgrad_anchor": True,
-            "cv_time_distribution": "legacy",
+            "cv_time_distribution": "beta_1p5_1",
             "cv_eps_shared_across_views": True,
             "pair_spatial_aug_mode": "none",
             "pair_photometric_aug_mode": "independent",
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
             "primary_lambda": False,
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_multi_sample_asymmetric_cross_view010",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_multisample_stopgrad",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
             cv_stopgrad_anchor=True,
-            cv_time_distribution="legacy",
+            cv_time_distribution="beta_1p5_1",
             cv_eps_shared_across_views=True,
             cv_average_over_samples=True,
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "B",
+            "experiment_group": "cross_view_multisample",
             "pair_type": "matched",
             "lambda_cv_target": 0.10,
             "cv_loss_mode": "multi_sample_asymmetric",
@@ -2086,43 +1653,43 @@ _CONFIGS = [
             "cv_anchor_view": "nominal",
             "cv_student_view": "perturbed",
             "cv_stopgrad_anchor": True,
-            "cv_time_distribution": "legacy",
+            "cv_time_distribution": "beta_1p5_1",
             "cv_eps_shared_across_views": True,
             "pair_spatial_aug_mode": "none",
             "pair_photometric_aug_mode": "independent",
-            "matched_reference": "pi05_v4_pair_cv010_no_spatial_aug",
-            "a0a_decision": "cv005 full was only 0.2pp above cv010; use cv010 as Phase B primary",
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "matched_reference": "pi05_cross_view_single_sample",
+            "selection_note": "lambda_cv=0.05 full was only 0.2pp above lambda_cv=0.10; use lambda_cv=0.10 as cross-view primary configuration",
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
             "primary_lambda": True,
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_multi_sample_bilateral_cross_view010",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_multisample_bilateral_beta_1p5_1_time",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
             cv_stopgrad_anchor=False,
-            cv_time_distribution="legacy",
+            cv_time_distribution="beta_1p5_1",
             cv_eps_shared_across_views=True,
             cv_average_over_samples=True,
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "B",
+            "experiment_group": "cross_view_multisample",
             "pair_type": "matched",
             "lambda_cv_target": 0.10,
             "cv_loss_mode": "multi_sample_asymmetric",
@@ -2131,24 +1698,24 @@ _CONFIGS = [
             "cv_anchor_view": "nominal",
             "cv_student_view": "perturbed",
             "cv_stopgrad_anchor": False,
-            "cv_time_distribution": "legacy",
+            "cv_time_distribution": "beta_1p5_1",
             "cv_eps_shared_across_views": True,
             "pair_spatial_aug_mode": "none",
             "pair_photometric_aug_mode": "independent",
-            "matched_reference": "pi05_v4_pair_cv010_no_spatial_aug",
-            "ablation_reference": "pi05_v4_pair_multi_sample_asymmetric_cross_view010",
+            "matched_reference": "pi05_cross_view_single_sample",
+            "ablation_reference": "pi05_cross_view_multisample_stopgrad",
             "decision_note": (
-                "K=2 bilateral-gradient CV: same B1 objective except CV gradients update both nominal and "
+                "K=2 bilateral-gradient CV: same stop-gradient objective except CV gradients update both nominal and "
                 "perturbed branches."
             ),
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
             "primary_lambda": True,
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_multi_sample_bilateral_cross_view010_action_biased_time",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_action_consistency",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
@@ -2159,20 +1726,20 @@ _CONFIGS = [
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "B",
-            "phase_step": "B6b",
+            "experiment_group": "cross_view_multisample",
+            "method_variant": "cross_view_action_consistency",
             "pair_type": "matched",
             "lambda_cv_target": 0.10,
             "cv_loss_mode": "multi_sample_asymmetric",
@@ -2186,20 +1753,20 @@ _CONFIGS = [
             "cv_eps_shared_across_views": True,
             "pair_spatial_aug_mode": "none",
             "pair_photometric_aug_mode": "independent",
-            "matched_reference": "pi05_v4_pair_cv010_no_spatial_aug",
-            "negative_reference": "pi05_v4_pair_multi_sample_asymmetric_cross_view010",
-            "bilateral_legacy_time_reference": "pi05_v4_pair_multi_sample_bilateral_cross_view010",
+            "matched_reference": "pi05_cross_view_single_sample",
+            "negative_reference": "pi05_cross_view_multisample_stopgrad",
+            "bilateral_beta_1p5_1_time_reference": "pi05_cross_view_multisample_bilateral_beta_1p5_1_time",
             "decision_note": (
-                "B6b unified fix: bilateral CV gradients plus Beta(2,3) action-biased time sampling."
+                "cross_view_action_consistency unified fix: bilateral CV gradients plus Beta(2,3) action-biased time sampling."
             ),
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
             "primary_lambda": True,
         },
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_multi_sample_bilateral_cross_view010_action_biased_time",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_action_consistency_clean_wrong",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_pair_mode="clean_wrong_batch_derangement",
             cv_loss_mode="multi_sample_asymmetric",
@@ -2211,20 +1778,20 @@ _CONFIGS = [
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "B",
-            "phase_step": "B6b-clean-wrong",
+            "experiment_group": "cross_view_multisample",
+            "method_variant": "clean-wrong-control",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.10,
             "cv_pair_mode": "clean_wrong_batch_derangement",
@@ -2239,64 +1806,64 @@ _CONFIGS = [
             "cv_eps_shared_across_views": True,
             "pair_spatial_aug_mode": "none",
             "pair_photometric_aug_mode": "independent",
-            "matched_reference": "pi05_v4_pair_multi_sample_bilateral_cross_view010_action_biased_time",
+            "matched_reference": "pi05_cross_view_action_consistency",
             "control_note": (
-                "Clean wrong for B6b: training uses the matched same-state pair repo and row-local FM labels; "
+                "Clean wrong for cross_view_action_consistency: training uses the matched same-state pair repo and row-local FM labels; "
                 "only the CV nominal anchor indices are deranged inside the multi-sample loss."
             ),
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
             "primary_lambda": True,
         },
     ),
-    _phase0b_b6b_ablation_train_config(
-        name="pi05_v4_pair_multi_sample_stopgrad_cross_view010_action_biased_time",
-        phase_step="B6b-ablate-gradient-stopgrad-beta2p0-3p0",
+    _method_ablation_train_config(
+        name="pi05_cross_view_action_consistency_stopgrad",
+        method_variant="cross_view_action_consistency-ablate-gradient-stopgrad-beta2p0-3p0",
         ablation_axis="gradient_direction",
         cv_num_samples=2,
         cv_stopgrad_anchor=True,
         cv_time_distribution="beta_2p0_3p0",
-        comparison_role="Compare against B6b to isolate bilateral vs stop-gradient with K=2 and Beta(2,3).",
+        comparison_role="Compare against cross_view_action_consistency to isolate bilateral vs stop-gradient with K=2 and Beta(2,3).",
     ),
-    _phase0b_b6b_ablation_train_config(
-        name="pi05_v4_pair_multi_sample_bilateral_cross_view010_k1_action_biased_time",
-        phase_step="B6b-ablate-K1-beta2p0-3p0",
+    _method_ablation_train_config(
+        name="pi05_cross_view_action_consistency_k1",
+        method_variant="cross_view_action_consistency-ablate-K1-beta2p0-3p0",
         ablation_axis="num_flow_samples",
         cv_num_samples=1,
         cv_stopgrad_anchor=False,
         cv_time_distribution="beta_2p0_3p0",
-        comparison_role="Compare against B6b K=2 and K=4 to isolate sample count.",
+        comparison_role="Compare against cross_view_action_consistency K=2 and K=4 to isolate sample count.",
     ),
-    _phase0b_b6b_ablation_train_config(
-        name="pi05_v4_pair_multi_sample_bilateral_cross_view010_k4_action_biased_time",
-        phase_step="B6b-ablate-K4-beta2p0-3p0",
+    _method_ablation_train_config(
+        name="pi05_cross_view_action_consistency_k4",
+        method_variant="cross_view_action_consistency-ablate-K4-beta2p0-3p0",
         ablation_axis="num_flow_samples",
         cv_num_samples=4,
         cv_stopgrad_anchor=False,
         cv_time_distribution="beta_2p0_3p0",
-        comparison_role="Compare against B6b K=2 and K=1 to isolate sample count.",
+        comparison_role="Compare against cross_view_action_consistency K=2 and K=1 to isolate sample count.",
     ),
-    _phase0b_b6b_ablation_train_config(
-        name="pi05_v4_pair_multi_sample_bilateral_cross_view010_uniform_time",
-        phase_step="B6b-ablate-uniform-time",
+    _method_ablation_train_config(
+        name="pi05_cross_view_action_consistency_uniform_time",
+        method_variant="cross_view_action_consistency-ablate-uniform-time",
         ablation_axis="time_distribution",
         cv_num_samples=2,
         cv_stopgrad_anchor=False,
         cv_time_distribution="uniform",
-        comparison_role="Compare against B6b Beta(2,3) and Beta(1,1.5) to isolate time distribution.",
+        comparison_role="Compare against cross_view_action_consistency Beta(2,3) and Beta(1,1.5) to isolate time distribution.",
     ),
-    _phase0b_b6b_ablation_train_config(
-        name="pi05_v4_pair_multi_sample_bilateral_cross_view010_beta_1p0_1p5_time",
-        phase_step="B6b-ablate-beta1p0-1p5-time",
+    _method_ablation_train_config(
+        name="pi05_cross_view_action_consistency_beta_1p0_1p5_time",
+        method_variant="cross_view_action_consistency-ablate-beta1p0-1p5-time",
         ablation_axis="time_distribution",
         cv_num_samples=2,
         cv_stopgrad_anchor=False,
         cv_time_distribution="beta_1p0_1p5",
-        comparison_role="Compare against B6b Beta(2,3) and uniform to isolate time distribution.",
+        comparison_role="Compare against cross_view_action_consistency Beta(2,3) and uniform to isolate time distribution.",
     ),
     TrainConfig(
-        name="pi05_realman_task1_b6b",
-        model=_phase0b_v4_config(
+        name="pi05_realman_task1_cross_view_action_consistency",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_action_dim=8,
             cv_loss_mode="multi_sample_asymmetric",
@@ -2312,8 +1879,8 @@ _CONFIGS = [
         ),
         data=_realman_task1_pair_data(),
         batch_size=_REALMAN_TASK1_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
         num_workers=_REALMAN_TASK1_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
@@ -2322,8 +1889,8 @@ _CONFIGS = [
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         save_interval=_REALMAN_TASK1_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task1_CoRL-B6b",
+            "experiment_group": "real_robot",
+            "method_variant": "Task1_CoRL-cross_view_action_consistency",
             "robot": "realman",
             "task": "pick up the blue batery and place it into cardboard box.",
             "pair_type": "matched",
@@ -2353,8 +1920,8 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_realman_task1_b6b_eval",
-        model=_phase0b_v4_config(
+        name="pi05_realman_task1_cross_view_action_consistency_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_action_dim=8,
             cv_loss_mode="multi_sample_asymmetric",
@@ -2374,10 +1941,10 @@ _CONFIGS = [
         wandb_enabled=False,
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task1_CoRL-B6b-eval",
+            "experiment_group": "real_robot",
+            "method_variant": "Task1_CoRL-cross_view_action_consistency-eval",
             "eval_only": True,
-            "train_config": "pi05_realman_task1_b6b",
+            "train_config": "pi05_realman_task1_cross_view_action_consistency",
             "robot": "realman",
             "lambda_cv_target": 0.10,
             "cv_loss_mode": "multi_sample_asymmetric",
@@ -2393,8 +1960,8 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_realman_task123_b6b",
-        model=_phase0b_v4_config(
+        name="pi05_realman_task123_cross_view_action_consistency",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_action_dim=8,
             cv_loss_mode="multi_sample_asymmetric",
@@ -2410,8 +1977,8 @@ _CONFIGS = [
         ),
         data=_realman_task123_pair_data(),
         batch_size=_REALMAN_TASK1_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
         num_workers=_REALMAN_TASK1_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
@@ -2420,8 +1987,8 @@ _CONFIGS = [
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         save_interval=_REALMAN_TASK1_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123_CoRL-B6b",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123_CoRL-cross_view_action_consistency",
             "robot": "realman",
             "tasks": [
                 "pick up the blue batery and place it into cardboard box.",
@@ -2459,8 +2026,8 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_realman_task123_b6b_delta",
-        model=_phase0b_v4_config(
+        name="pi05_realman_task123_cross_view_action_consistency_delta",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_action_dim=8,
             cv_loss_mode="multi_sample_asymmetric",
@@ -2476,8 +2043,8 @@ _CONFIGS = [
         ),
         data=_realman_task123_pair_data_delta(),
         batch_size=_REALMAN_TASK1_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
         num_workers=_REALMAN_TASK1_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
@@ -2486,15 +2053,15 @@ _CONFIGS = [
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         save_interval=_REALMAN_TASK1_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123_CoRL-B6b-delta",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123_CoRL-cross_view_action_consistency-delta",
             "robot": "realman",
             "tasks": [
                 "pick up the blue batery and place it into cardboard box.",
                 "close the laptop lid.",
                 "takeoff the headphone from the stand.",
             ],
-            "method": "b6b_cv_delta_joint",
+            "method": "cross_view_cv_delta_joint",
             "action_representation": "joint_delta_from_state_gripper_absolute",
             "delta_action_mask_spec": list(_REALMAN_TASK123_DELTA_MASK_SPEC),
             "pair_type": "matched",
@@ -2528,8 +2095,8 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_realman_task123_b6b_delta_eval",
-        model=_phase0b_v4_config(
+        name="pi05_realman_task123_cross_view_action_consistency_delta_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_action_dim=8,
             cv_loss_mode="multi_sample_asymmetric",
@@ -2549,12 +2116,12 @@ _CONFIGS = [
         wandb_enabled=False,
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123_CoRL-B6b-delta-eval",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123_CoRL-cross_view_action_consistency-delta-eval",
             "eval_only": True,
-            "train_config": "pi05_realman_task123_b6b_delta",
+            "train_config": "pi05_realman_task123_cross_view_action_consistency_delta",
             "robot": "realman",
-            "method": "b6b_cv_delta_joint",
+            "method": "cross_view_cv_delta_joint",
             "action_representation": "joint_delta_from_state_gripper_absolute",
             "delta_action_mask_spec": list(_REALMAN_TASK123_DELTA_MASK_SPEC),
             "lambda_cv_target": 0.10,
@@ -2569,18 +2136,18 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        # FM-only ablation of pi05_realman_task123_b6b_delta. Every hyperparam
-        # matches the b6b_delta train config (full model, delta-joint targets,
+        # FM-only ablation of pi05_realman_task123_cross_view_action_consistency_delta. Every hyperparam
+        # matches the cross_view_delta train config (full model, delta-joint targets,
         # pair data with both nominal+perturbed views, lr 5e-5, 10k steps,
         # batch 192 pair, multi_sample_asymmetric with K=2 / beta_2p0_3p0).
         # The only change is lambda_cv = 0.0, which zeroes out the cross-view
-        # term in v4_cv._pair_loss_components (v4_cv.py:651:
+        # term in cross_view_action_consistency._pair_loss_components (cross_view_action_consistency.py:651:
         #     total = loss_fm + lambda_cv * loss_cv
         # and loss_fm already averages over BOTH views, so both still receive
         # full flow-matching supervision — this is the correct paired-FM-only
         # ablation, not a single-view baseline.
-        name="pi05_realman_task123_b6b_delta_fm_only",
-        model=_phase0b_v4_config(
+        name="pi05_realman_task123_cross_view_action_consistency_delta_fm_only",
+        model=_cross_view_model_config(
             lambda_cv=0.0,
             cv_action_dim=8,
             cv_loss_mode="multi_sample_asymmetric",
@@ -2596,8 +2163,8 @@ _CONFIGS = [
         ),
         data=_realman_task123_pair_data_delta(),
         batch_size=_REALMAN_TASK1_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
         num_workers=_REALMAN_TASK1_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
@@ -2606,8 +2173,8 @@ _CONFIGS = [
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         save_interval=_REALMAN_TASK1_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123_CoRL-B6b-delta-fm-only",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123_CoRL-cross_view_action_consistency-delta-fm-only",
             "robot": "realman",
             "tasks": [
                 "pick up the blue batery and place it into cardboard box.",
@@ -2615,7 +2182,7 @@ _CONFIGS = [
                 "takeoff the headphone from the stand.",
             ],
             "method": "fm_only_delta_joint_paired",
-            "ablation_of": "pi05_realman_task123_b6b_delta",
+            "ablation_of": "pi05_realman_task123_cross_view_action_consistency_delta",
             "action_representation": "joint_delta_from_state_gripper_absolute",
             "delta_action_mask_spec": list(_REALMAN_TASK123_DELTA_MASK_SPEC),
             "pair_type": "matched",
@@ -2649,8 +2216,8 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_realman_task123_b6b_delta_fm_only_eval",
-        model=_phase0b_v4_config(
+        name="pi05_realman_task123_cross_view_action_consistency_delta_fm_only_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.0,
             cv_action_dim=8,
             cv_loss_mode="multi_sample_asymmetric",
@@ -2670,11 +2237,11 @@ _CONFIGS = [
         wandb_enabled=False,
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123_CoRL-B6b-delta-fm-only-eval",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123_CoRL-cross_view_action_consistency-delta-fm-only-eval",
             "eval_only": True,
-            "train_config": "pi05_realman_task123_b6b_delta_fm_only",
-            "ablation_of": "pi05_realman_task123_b6b_delta",
+            "train_config": "pi05_realman_task123_cross_view_action_consistency_delta_fm_only",
+            "ablation_of": "pi05_realman_task123_cross_view_action_consistency_delta",
             "robot": "realman",
             "method": "fm_only_delta_joint_paired",
             "action_representation": "joint_delta_from_state_gripper_absolute",
@@ -2691,8 +2258,8 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_realman_task123_b6b_action_expert_only_5k_lr2e5",
-        model=_phase0b_v4_config(
+        name="pi05_realman_task123_cross_view_action_consistency_action_expert_only_5k_lr2e5",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             total_train_steps=_REALMAN_TASK123_SMALL_NUM_TRAIN_STEPS,
             cv_action_dim=8,
@@ -2710,7 +2277,7 @@ _CONFIGS = [
         data=_realman_task123_pair_data(),
         batch_size=_REALMAN_TASK1_PAIR_BATCH_SIZE,
         lr_schedule=_realman_small_action_expert_schedule(),
-        optimizer=_phase_b_optimizer(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
         num_workers=_REALMAN_TASK1_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
@@ -2721,16 +2288,16 @@ _CONFIGS = [
         save_interval=_REALMAN_TASK123_SMALL_SAVE_INTERVAL,
         keep_period=_REALMAN_TASK123_SMALL_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123_CoRL-B6b-action-expert-only-small",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123_CoRL-cross_view_action_consistency-action-expert-only-small",
             "robot": "realman",
             "tasks": [
                 "pick up the blue batery and place it into cardboard box.",
                 "close the laptop lid.",
                 "takeoff the headphone from the stand.",
             ],
-            "method": "b6b_cv_action_expert_only",
-            "base_train_config": "pi05_realman_task123_b6b",
+            "method": "cross_view_cv_action_expert_only",
+            "base_train_config": "pi05_realman_task123_cross_view_action_consistency",
             "pair_type": "matched",
             "pair_dataset": _REALMAN_TASK123_PAIR_REPO_ID,
             "source_datasets": [
@@ -2769,8 +2336,8 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_realman_task123_b6b_eval",
-        model=_phase0b_v4_config(
+        name="pi05_realman_task123_cross_view_action_consistency_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_action_dim=8,
             cv_loss_mode="multi_sample_asymmetric",
@@ -2790,10 +2357,10 @@ _CONFIGS = [
         wandb_enabled=False,
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123_CoRL-B6b-eval",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123_CoRL-cross_view_action_consistency-eval",
             "eval_only": True,
-            "train_config": "pi05_realman_task123_b6b",
+            "train_config": "pi05_realman_task123_cross_view_action_consistency",
             "robot": "realman",
             "lambda_cv_target": 0.10,
             "cv_loss_mode": "multi_sample_asymmetric",
@@ -2807,8 +2374,8 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_realman_task123_b6b_action_expert_only_5k_lr2e5_eval",
-        model=_phase0b_v4_config(
+        name="pi05_realman_task123_cross_view_action_consistency_action_expert_only_5k_lr2e5_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             total_train_steps=_REALMAN_TASK123_SMALL_NUM_TRAIN_STEPS,
             cv_action_dim=8,
@@ -2829,13 +2396,13 @@ _CONFIGS = [
         wandb_enabled=False,
         num_train_steps=_REALMAN_TASK123_SMALL_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123_CoRL-B6b-action-expert-only-small-eval",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123_CoRL-cross_view_action_consistency-action-expert-only-small-eval",
             "eval_only": True,
-            "train_config": "pi05_realman_task123_b6b_action_expert_only_5k_lr2e5",
+            "train_config": "pi05_realman_task123_cross_view_action_consistency_action_expert_only_5k_lr2e5",
             "robot": "realman",
-            "method": "b6b_cv_action_expert_only",
-            "base_train_config": "pi05_realman_task123_b6b",
+            "method": "cross_view_cv_action_expert_only",
+            "base_train_config": "pi05_realman_task123_cross_view_action_consistency",
             "lambda_cv_target": 0.10,
             "cv_loss_mode": "multi_sample_asymmetric",
             "cv_gradient_mode": "bilateral",
@@ -2855,8 +2422,8 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_realman_task123_b6b_eval_h20",
-        model=_phase0b_v4_config(
+        name="pi05_realman_task123_cross_view_action_consistency_eval_h20",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             action_horizon=20,
             cv_action_dim=8,
@@ -2877,10 +2444,10 @@ _CONFIGS = [
         wandb_enabled=False,
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123_CoRL-B6b-eval-h20",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123_CoRL-cross_view_action_consistency-eval-h20",
             "eval_only": True,
-            "train_config": "pi05_realman_task123_b6b",
+            "train_config": "pi05_realman_task123_cross_view_action_consistency",
             "robot": "realman",
             "lambda_cv_target": 0.10,
             "cv_loss_mode": "multi_sample_asymmetric",
@@ -2900,8 +2467,8 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
         data=_realman_task123_pi05_all_single_view_data(),
         batch_size=_REALMAN_TASK1_EFFECTIVE_VIEW_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
         num_workers=_REALMAN_TASK1_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
@@ -2910,8 +2477,8 @@ _CONFIGS = [
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         save_interval=_REALMAN_TASK1_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123-CoRL-pi05-all-fm-only",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123-CoRL-pi05-all-fm-only",
             "robot": "realman",
             "tasks": [
                 "pick up the blue batery and place it into cardboard box.",
@@ -2941,8 +2508,8 @@ _CONFIGS = [
         wandb_enabled=False,
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123-CoRL-pi05-all-fm-only-eval",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123-CoRL-pi05-all-fm-only-eval",
             "eval_only": True,
             "train_config": "pi05_realman_task123_all_fm_only",
             "robot": "realman",
@@ -2964,8 +2531,8 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
         data=_realman_task123_pi05_all_single_view_data(),
         batch_size=_REALMAN_TASK1_EFFECTIVE_VIEW_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
         num_workers=_REALMAN_TASK1_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
@@ -2975,8 +2542,8 @@ _CONFIGS = [
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         save_interval=_REALMAN_TASK1_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123-CoRL-pi05-fm-only-action-expert-only",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123-CoRL-pi05-fm-only-action-expert-only",
             "robot": "realman",
             "tasks": [
                 "pick up the blue batery and place it into cardboard box.",
@@ -3009,8 +2576,8 @@ _CONFIGS = [
         wandb_enabled=False,
         num_train_steps=_REALMAN_TASK1_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "real-robot",
-            "phase_step": "Task123-CoRL-pi05-fm-only-action-expert-only-eval",
+            "experiment_group": "real_robot",
+            "method_variant": "Task123-CoRL-pi05-fm-only-action-expert-only-eval",
             "eval_only": True,
             "train_config": "pi05_realman_task123_all_fm_only_action_expert_only",
             "robot": "realman",
@@ -3031,372 +2598,372 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_multi_sample_asymmetric_cross_view005",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_clean_wrong_multisample_stopgrad_lambda005",
+        model=_cross_view_model_config(
             lambda_cv=0.05,
             cv_pair_mode="clean_wrong_batch_derangement",
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
             cv_stopgrad_anchor=True,
-            cv_time_distribution="legacy",
+            cv_time_distribution="beta_1p5_1",
             cv_eps_shared_across_views=True,
             cv_average_over_samples=True,
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "B",
+            "experiment_group": "cross_view_multisample",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.05,
             "cv_pair_mode": "clean_wrong_batch_derangement",
             "cv_loss_mode": "multi_sample_asymmetric",
             "cv_num_samples": 2,
             "control_note": "FM stays row-local; only the CV nominal anchor index is deranged inside the loss.",
-            "matched_reference": "pi05_v4_pair_multi_sample_asymmetric_cross_view005",
+            "matched_reference": "pi05_cross_view_multisample_stopgrad_lambda005",
             "pair_spatial_aug_mode": "none",
             "pair_photometric_aug_mode": "independent",
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
             "primary_lambda": False,
         },
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_multi_sample_asymmetric_cross_view010",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_clean_wrong_multisample_stopgrad",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_pair_mode="clean_wrong_batch_derangement",
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
             cv_stopgrad_anchor=True,
-            cv_time_distribution="legacy",
+            cv_time_distribution="beta_1p5_1",
             cv_eps_shared_across_views=True,
             cv_average_over_samples=True,
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "B",
+            "experiment_group": "cross_view_multisample",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.10,
             "cv_pair_mode": "clean_wrong_batch_derangement",
             "cv_loss_mode": "multi_sample_asymmetric",
             "cv_num_samples": 2,
             "control_note": "FM stays row-local; only the CV nominal anchor index is deranged inside the loss.",
-            "matched_reference": "pi05_v4_pair_multi_sample_asymmetric_cross_view010",
-            "a0a_decision": "cv005 full was only 0.2pp above cv010; use cv010 as Phase B primary",
+            "matched_reference": "pi05_cross_view_multisample_stopgrad",
+            "selection_note": "lambda_cv=0.05 full was only 0.2pp above lambda_cv=0.10; use lambda_cv=0.10 as cross-view primary configuration",
             "pair_spatial_aug_mode": "none",
             "pair_photometric_aug_mode": "independent",
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
             "primary_lambda": True,
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_cv020",
-        model=_phase0b_v4_config(lambda_cv=0.20),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        name="pi05_cross_view_lambda020",
+        model=_cross_view_model_config(lambda_cv=0.20),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "pair_type": "matched",
             "lambda_cv_target": 0.20,
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_cv050",
-        model=_phase0b_v4_config(lambda_cv=0.50),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        name="pi05_cross_view_lambda050",
+        model=_cross_view_model_config(lambda_cv=0.50),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "pair_type": "matched",
             "lambda_cv_target": 0.50,
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
         },
     ),
     TrainConfig(
-        name="pi05_v4_wrong_cv005",
-        model=_phase0b_v4_config(lambda_cv=0.05),
-        data=_phase0b_pair_data(_PHASE0B_WRONG_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        name="pi05_cross_view_wrong_state_lambda005",
+        model=_cross_view_model_config(lambda_cv=0.05),
+        data=_cross_view_pair_data(_CROSS_VIEW_WRONG_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "pair_type": "wrong_state",
             "lambda_cv_target": 0.05,
             "control_note": "wrong-state pair confidence is intentionally ignored; CV weight is 1.0",
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
         },
     ),
     TrainConfig(
-        name="pi05_v4_wrong_cv010",
-        model=_phase0b_v4_config(lambda_cv=0.10),
-        data=_phase0b_pair_data(_PHASE0B_WRONG_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        name="pi05_cross_view_wrong_state_lambda010",
+        model=_cross_view_model_config(lambda_cv=0.10),
+        data=_cross_view_pair_data(_CROSS_VIEW_WRONG_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "pair_type": "wrong_state",
             "lambda_cv_target": 0.10,
             "control_note": "wrong-state pair confidence is intentionally ignored; CV weight is 1.0",
-            "matched_reference": "pi05_v4_pair_cv010",
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "matched_reference": "pi05_cross_view_lambda010",
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
         },
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_cv010",
-        model=_phase0b_v4_config(lambda_cv=0.10, cv_pair_mode="clean_wrong_batch_derangement"),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        name="pi05_cross_view_clean_wrong_single_sample",
+        model=_cross_view_model_config(lambda_cv=0.10, cv_pair_mode="clean_wrong_batch_derangement"),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.10,
             "cv_pair_mode": "clean_wrong_batch_derangement",
             "control_note": (
-                "FM uses correct per-view labels from the matched repo; only the CV branch deranges B within batch."
+                "FM uses correct per-view labels from the matched repo; only the CV branch deranges the batch index."
             ),
-            "matched_reference": "pi05_v4_pair_cv010",
-            "poisoned_control_to_deprecate": "pi05_v4_wrong_cv010",
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "matched_reference": "pi05_cross_view_lambda010",
+            "poisoned_control_to_deprecate": "pi05_cross_view_wrong_state_lambda010",
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
         },
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_cv020",
-        model=_phase0b_v4_config(lambda_cv=0.20, cv_pair_mode="clean_wrong_batch_derangement"),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        name="pi05_cross_view_clean_wrong_lambda020",
+        model=_cross_view_model_config(lambda_cv=0.20, cv_pair_mode="clean_wrong_batch_derangement"),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.20,
             "cv_pair_mode": "clean_wrong_batch_derangement",
             "control_note": (
-                "FM uses correct per-view labels from the matched repo; only the CV branch deranges B within batch."
+                "FM uses correct per-view labels from the matched repo; only the CV branch deranges the batch index."
             ),
-            "matched_reference": "pi05_v4_pair_cv020",
-            "poisoned_control_to_deprecate": "pi05_v4_wrong_cv010",
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "matched_reference": "pi05_cross_view_lambda020",
+            "poisoned_control_to_deprecate": "pi05_cross_view_wrong_state_lambda010",
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
         },
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_cv050",
-        model=_phase0b_v4_config(lambda_cv=0.50, cv_pair_mode="clean_wrong_batch_derangement"),
-        data=_phase0b_pair_data(_PHASE0B_MATCHED_REPO_ID),
-        batch_size=_PHASE0B_PAIR_BATCH_SIZE,
-        lr_schedule=_phase0b_schedule(),
-        optimizer=_phase_b_optimizer(),
+        name="pi05_cross_view_clean_wrong_lambda050",
+        model=_cross_view_model_config(lambda_cv=0.50, cv_pair_mode="clean_wrong_batch_derangement"),
+        data=_cross_view_pair_data(_CROSS_VIEW_MATCHED_REPO_ID),
+        batch_size=_CROSS_VIEW_PAIR_BATCH_SIZE,
+        lr_schedule=_cross_view_schedule(),
+        optimizer=_cross_view_optimizer(),
         ema_decay=0.999,
-        num_workers=_PHASE0B_NUM_WORKERS,
+        num_workers=_CROSS_VIEW_NUM_WORKERS,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE0B_SAVE_INTERVAL,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
+        save_interval=_CROSS_VIEW_SAVE_INTERVAL,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.50,
             "cv_pair_mode": "clean_wrong_batch_derangement",
             "control_note": (
-                "FM uses correct per-view labels from the matched repo; only the CV branch deranges B within batch."
+                "FM uses correct per-view labels from the matched repo; only the CV branch deranges the batch index."
             ),
-            "matched_reference": "pi05_v4_pair_cv050",
-            "poisoned_control_to_deprecate": "pi05_v4_wrong_cv010",
-            "pair_batch_size": _PHASE0B_PAIR_BATCH_SIZE,
-            "effective_view_batch_size": _PHASE0B_EFFECTIVE_VIEW_BATCH_SIZE,
+            "matched_reference": "pi05_cross_view_lambda050",
+            "poisoned_control_to_deprecate": "pi05_cross_view_wrong_state_lambda010",
+            "pair_batch_size": _CROSS_VIEW_PAIR_BATCH_SIZE,
+            "effective_view_batch_size": _CROSS_VIEW_EFFECTIVE_VIEW_BATCH_SIZE,
         },
     ),
-    # Eval-only variants for LIBERO-plus rollouts. These load the same Phase 0B
+    # Eval-only variants for LIBERO-plus rollouts. These load the same cross-view
     # checkpoint parameters but use single-view inference inputs instead of the
     # training-time nominal/perturbed pair transform.
     TrainConfig(
-        name="pi05_v4_pair_fm_only_eval",
-        model=_phase0b_v4_config(lambda_cv=0.0),
-        data=_phase0b_eval_data(),
+        name="pi05_cross_view_fm_only_eval",
+        model=_cross_view_model_config(lambda_cv=0.0),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "eval_only": True,
-            "train_config": "pi05_v4_pair_fm_only",
+            "train_config": "pi05_cross_view_fm_only",
             "lambda_cv_target": 0.0,
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_cv005_eval",
-        model=_phase0b_v4_config(lambda_cv=0.05),
-        data=_phase0b_eval_data(),
+        name="pi05_cross_view_lambda005_eval",
+        model=_cross_view_model_config(lambda_cv=0.05),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "eval_only": True,
-            "train_config": "pi05_v4_pair_cv005",
+            "train_config": "pi05_cross_view_lambda005",
             "pair_type": "matched",
             "lambda_cv_target": 0.05,
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_cv010_eval",
-        model=_phase0b_v4_config(lambda_cv=0.10),
-        data=_phase0b_eval_data(),
+        name="pi05_cross_view_lambda010_eval",
+        model=_cross_view_model_config(lambda_cv=0.10),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "eval_only": True,
-            "train_config": "pi05_v4_pair_cv010",
+            "train_config": "pi05_cross_view_lambda010",
             "pair_type": "matched",
             "lambda_cv_target": 0.10,
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_cv020_eval",
-        model=_phase0b_v4_config(lambda_cv=0.20),
-        data=_phase0b_eval_data(),
+        name="pi05_cross_view_lambda020_eval",
+        model=_cross_view_model_config(lambda_cv=0.20),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "eval_only": True,
-            "train_config": "pi05_v4_pair_cv020",
+            "train_config": "pi05_cross_view_lambda020",
             "pair_type": "matched",
             "lambda_cv_target": 0.20,
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_cv050_eval",
-        model=_phase0b_v4_config(lambda_cv=0.50),
-        data=_phase0b_eval_data(),
+        name="pi05_cross_view_lambda050_eval",
+        model=_cross_view_model_config(lambda_cv=0.50),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "eval_only": True,
-            "train_config": "pi05_v4_pair_cv050",
+            "train_config": "pi05_cross_view_lambda050",
             "pair_type": "matched",
             "lambda_cv_target": 0.50,
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_multi_sample_asymmetric_cross_view005_eval",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_multisample_stopgrad_lambda005_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.05,
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
             cv_stopgrad_anchor=True,
-            cv_time_distribution="legacy",
+            cv_time_distribution="beta_1p5_1",
             cv_eps_shared_across_views=True,
             cv_average_over_samples=True,
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_eval_data(),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "B",
+            "experiment_group": "cross_view_multisample",
             "eval_only": True,
-            "train_config": "pi05_v4_pair_multi_sample_asymmetric_cross_view005",
+            "train_config": "pi05_cross_view_multisample_stopgrad_lambda005",
             "pair_type": "matched",
             "lambda_cv_target": 0.05,
             "cv_loss_mode": "multi_sample_asymmetric",
@@ -3405,27 +2972,27 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_multi_sample_asymmetric_cross_view010_eval",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_multisample_stopgrad_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
             cv_stopgrad_anchor=True,
-            cv_time_distribution="legacy",
+            cv_time_distribution="beta_1p5_1",
             cv_eps_shared_across_views=True,
             cv_average_over_samples=True,
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_eval_data(),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "B",
+            "experiment_group": "cross_view_multisample",
             "eval_only": True,
-            "train_config": "pi05_v4_pair_multi_sample_asymmetric_cross_view010",
+            "train_config": "pi05_cross_view_multisample_stopgrad",
             "pair_type": "matched",
             "lambda_cv_target": 0.10,
             "cv_loss_mode": "multi_sample_asymmetric",
@@ -3435,27 +3002,27 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_multi_sample_bilateral_cross_view010_eval",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_multisample_bilateral_beta_1p5_1_time_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
             cv_stopgrad_anchor=False,
-            cv_time_distribution="legacy",
+            cv_time_distribution="beta_1p5_1",
             cv_eps_shared_across_views=True,
             cv_average_over_samples=True,
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_eval_data(),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "B",
+            "experiment_group": "cross_view_multisample",
             "eval_only": True,
-            "train_config": "pi05_v4_pair_multi_sample_bilateral_cross_view010",
+            "train_config": "pi05_cross_view_multisample_bilateral_beta_1p5_1_time",
             "pair_type": "matched",
             "lambda_cv_target": 0.10,
             "cv_loss_mode": "multi_sample_asymmetric",
@@ -3467,8 +3034,8 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_v4_pair_multi_sample_bilateral_cross_view010_action_biased_time_eval",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_action_consistency_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
@@ -3479,16 +3046,16 @@ _CONFIGS = [
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_eval_data(),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "B",
-            "phase_step": "B6b",
+            "experiment_group": "cross_view_multisample",
+            "method_variant": "cross_view_action_consistency",
             "eval_only": True,
-            "train_config": "pi05_v4_pair_multi_sample_bilateral_cross_view010_action_biased_time",
+            "train_config": "pi05_cross_view_action_consistency",
             "pair_type": "matched",
             "lambda_cv_target": 0.10,
             "cv_loss_mode": "multi_sample_asymmetric",
@@ -3502,8 +3069,8 @@ _CONFIGS = [
         },
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_multi_sample_bilateral_cross_view010_action_biased_time_eval",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_action_consistency_clean_wrong_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_pair_mode="clean_wrong_batch_derangement",
             cv_loss_mode="multi_sample_asymmetric",
@@ -3515,16 +3082,16 @@ _CONFIGS = [
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_eval_data(),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "B",
-            "phase_step": "B6b-clean-wrong",
+            "experiment_group": "cross_view_multisample",
+            "method_variant": "clean-wrong-control",
             "eval_only": True,
-            "train_config": "pi05_v4_clean_wrong_multi_sample_bilateral_cross_view010_action_biased_time",
+            "train_config": "pi05_cross_view_action_consistency_clean_wrong",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.10,
             "cv_pair_mode": "clean_wrong_batch_derangement",
@@ -3534,475 +3101,209 @@ _CONFIGS = [
             "cv_stopgrad_anchor": False,
             "cv_time_distribution": "beta_2p0_3p0",
             "cv_time_bias": "action_biased",
-            "matched_reference": "pi05_v4_pair_multi_sample_bilateral_cross_view010_action_biased_time",
+            "matched_reference": "pi05_cross_view_action_consistency",
             "primary_lambda": True,
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
-    _phase0b_b6b_ablation_eval_config(
-        "pi05_v4_pair_multi_sample_stopgrad_cross_view010_action_biased_time",
-        phase_step="B6b-ablate-gradient-stopgrad-beta2p0-3p0",
+    _method_ablation_eval_config(
+        "pi05_cross_view_action_consistency_stopgrad",
+        method_variant="cross_view_action_consistency-ablate-gradient-stopgrad-beta2p0-3p0",
         ablation_axis="gradient_direction",
         cv_num_samples=2,
         cv_stopgrad_anchor=True,
         cv_time_distribution="beta_2p0_3p0",
-        comparison_role="Compare against B6b to isolate bilateral vs stop-gradient with K=2 and Beta(2,3).",
+        comparison_role="Compare against cross_view_action_consistency to isolate bilateral vs stop-gradient with K=2 and Beta(2,3).",
     ),
-    _phase0b_b6b_ablation_eval_config(
-        "pi05_v4_pair_multi_sample_bilateral_cross_view010_k1_action_biased_time",
-        phase_step="B6b-ablate-K1-beta2p0-3p0",
+    _method_ablation_eval_config(
+        "pi05_cross_view_action_consistency_k1",
+        method_variant="cross_view_action_consistency-ablate-K1-beta2p0-3p0",
         ablation_axis="num_flow_samples",
         cv_num_samples=1,
         cv_stopgrad_anchor=False,
         cv_time_distribution="beta_2p0_3p0",
-        comparison_role="Compare against B6b K=2 and K=4 to isolate sample count.",
+        comparison_role="Compare against cross_view_action_consistency K=2 and K=4 to isolate sample count.",
     ),
-    _phase0b_b6b_ablation_eval_config(
-        "pi05_v4_pair_multi_sample_bilateral_cross_view010_k4_action_biased_time",
-        phase_step="B6b-ablate-K4-beta2p0-3p0",
+    _method_ablation_eval_config(
+        "pi05_cross_view_action_consistency_k4",
+        method_variant="cross_view_action_consistency-ablate-K4-beta2p0-3p0",
         ablation_axis="num_flow_samples",
         cv_num_samples=4,
         cv_stopgrad_anchor=False,
         cv_time_distribution="beta_2p0_3p0",
-        comparison_role="Compare against B6b K=2 and K=1 to isolate sample count.",
+        comparison_role="Compare against cross_view_action_consistency K=2 and K=1 to isolate sample count.",
     ),
-    _phase0b_b6b_ablation_eval_config(
-        "pi05_v4_pair_multi_sample_bilateral_cross_view010_uniform_time",
-        phase_step="B6b-ablate-uniform-time",
+    _method_ablation_eval_config(
+        "pi05_cross_view_action_consistency_uniform_time",
+        method_variant="cross_view_action_consistency-ablate-uniform-time",
         ablation_axis="time_distribution",
         cv_num_samples=2,
         cv_stopgrad_anchor=False,
         cv_time_distribution="uniform",
-        comparison_role="Compare against B6b Beta(2,3) and Beta(1,1.5) to isolate time distribution.",
+        comparison_role="Compare against cross_view_action_consistency Beta(2,3) and Beta(1,1.5) to isolate time distribution.",
     ),
-    _phase0b_b6b_ablation_eval_config(
-        "pi05_v4_pair_multi_sample_bilateral_cross_view010_beta_1p0_1p5_time",
-        phase_step="B6b-ablate-beta1p0-1p5-time",
+    _method_ablation_eval_config(
+        "pi05_cross_view_action_consistency_beta_1p0_1p5_time",
+        method_variant="cross_view_action_consistency-ablate-beta1p0-1p5-time",
         ablation_axis="time_distribution",
         cv_num_samples=2,
         cv_stopgrad_anchor=False,
         cv_time_distribution="beta_1p0_1p5",
-        comparison_role="Compare against B6b Beta(2,3) and uniform to isolate time distribution.",
+        comparison_role="Compare against cross_view_action_consistency Beta(2,3) and uniform to isolate time distribution.",
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_multi_sample_asymmetric_cross_view005_eval",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_clean_wrong_multisample_stopgrad_lambda005_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.05,
             cv_pair_mode="clean_wrong_batch_derangement",
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
             cv_stopgrad_anchor=True,
-            cv_time_distribution="legacy",
+            cv_time_distribution="beta_1p5_1",
             cv_eps_shared_across_views=True,
             cv_average_over_samples=True,
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_eval_data(),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "B",
+            "experiment_group": "cross_view_multisample",
             "eval_only": True,
-            "train_config": "pi05_v4_clean_wrong_multi_sample_asymmetric_cross_view005",
+            "train_config": "pi05_cross_view_clean_wrong_multisample_stopgrad_lambda005",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.05,
             "cv_pair_mode": "clean_wrong_batch_derangement",
             "cv_loss_mode": "multi_sample_asymmetric",
             "cv_num_samples": 2,
-            "matched_reference": "pi05_v4_pair_multi_sample_asymmetric_cross_view005",
+            "matched_reference": "pi05_cross_view_multisample_stopgrad_lambda005",
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_multi_sample_asymmetric_cross_view010_eval",
-        model=_phase0b_v4_config(
+        name="pi05_cross_view_clean_wrong_multisample_stopgrad_eval",
+        model=_cross_view_model_config(
             lambda_cv=0.10,
             cv_pair_mode="clean_wrong_batch_derangement",
             cv_loss_mode="multi_sample_asymmetric",
             cv_num_samples=2,
             cv_stopgrad_anchor=True,
-            cv_time_distribution="legacy",
+            cv_time_distribution="beta_1p5_1",
             cv_eps_shared_across_views=True,
             cv_average_over_samples=True,
             pair_spatial_aug_mode="none",
             pair_photometric_aug_mode="independent",
         ),
-        data=_phase0b_eval_data(),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "B",
+            "experiment_group": "cross_view_multisample",
             "eval_only": True,
-            "train_config": "pi05_v4_clean_wrong_multi_sample_asymmetric_cross_view010",
+            "train_config": "pi05_cross_view_clean_wrong_multisample_stopgrad",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.10,
             "cv_pair_mode": "clean_wrong_batch_derangement",
             "cv_loss_mode": "multi_sample_asymmetric",
             "cv_num_samples": 2,
-            "matched_reference": "pi05_v4_pair_multi_sample_asymmetric_cross_view010",
+            "matched_reference": "pi05_cross_view_multisample_stopgrad",
             "primary_lambda": True,
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
     TrainConfig(
-        name="pi05_v4_wrong_cv005_eval",
-        model=_phase0b_v4_config(lambda_cv=0.05),
-        data=_phase0b_eval_data(),
+        name="pi05_cross_view_wrong_state_lambda005_eval",
+        model=_cross_view_model_config(lambda_cv=0.05),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "eval_only": True,
-            "train_config": "pi05_v4_wrong_cv005",
+            "train_config": "pi05_cross_view_wrong_state_lambda005",
             "pair_type": "wrong_state",
             "lambda_cv_target": 0.05,
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
     TrainConfig(
-        name="pi05_v4_wrong_cv010_eval",
-        model=_phase0b_v4_config(lambda_cv=0.10),
-        data=_phase0b_eval_data(),
+        name="pi05_cross_view_wrong_state_lambda010_eval",
+        model=_cross_view_model_config(lambda_cv=0.10),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "eval_only": True,
-            "train_config": "pi05_v4_wrong_cv010",
+            "train_config": "pi05_cross_view_wrong_state_lambda010",
             "pair_type": "wrong_state",
             "lambda_cv_target": 0.10,
-            "matched_reference": "pi05_v4_pair_cv010",
+            "matched_reference": "pi05_cross_view_lambda010",
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_cv010_eval",
-        model=_phase0b_v4_config(lambda_cv=0.10, cv_pair_mode="clean_wrong_batch_derangement"),
-        data=_phase0b_eval_data(),
+        name="pi05_cross_view_clean_wrong_single_sample_eval",
+        model=_cross_view_model_config(lambda_cv=0.10, cv_pair_mode="clean_wrong_batch_derangement"),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "eval_only": True,
-            "train_config": "pi05_v4_clean_wrong_cv010",
+            "train_config": "pi05_cross_view_clean_wrong_single_sample",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.10,
-            "matched_reference": "pi05_v4_pair_cv010",
+            "matched_reference": "pi05_cross_view_lambda010",
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_cv020_eval",
-        model=_phase0b_v4_config(lambda_cv=0.20, cv_pair_mode="clean_wrong_batch_derangement"),
-        data=_phase0b_eval_data(),
+        name="pi05_cross_view_clean_wrong_lambda020_eval",
+        model=_cross_view_model_config(lambda_cv=0.20, cv_pair_mode="clean_wrong_batch_derangement"),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "eval_only": True,
-            "train_config": "pi05_v4_clean_wrong_cv020",
+            "train_config": "pi05_cross_view_clean_wrong_lambda020",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.20,
-            "matched_reference": "pi05_v4_pair_cv020",
+            "matched_reference": "pi05_cross_view_lambda020",
             "inference_inputs": "single_scene_rgb_language_state",
         },
     ),
     TrainConfig(
-        name="pi05_v4_clean_wrong_cv050_eval",
-        model=_phase0b_v4_config(lambda_cv=0.50, cv_pair_mode="clean_wrong_batch_derangement"),
-        data=_phase0b_eval_data(),
+        name="pi05_cross_view_clean_wrong_lambda050_eval",
+        model=_cross_view_model_config(lambda_cv=0.50, cv_pair_mode="clean_wrong_batch_derangement"),
+        data=_cross_view_eval_data(),
         batch_size=1,
         num_workers=0,
         wandb_enabled=False,
-        num_train_steps=_PHASE0B_NUM_TRAIN_STEPS,
+        num_train_steps=_CROSS_VIEW_NUM_TRAIN_STEPS,
         policy_metadata={
-            "phase": "0B",
+            "experiment_group": "cross_view_lambda_sweep",
             "eval_only": True,
-            "train_config": "pi05_v4_clean_wrong_cv050",
+            "train_config": "pi05_cross_view_clean_wrong_lambda050",
             "pair_type": "clean_wrong_cv",
             "lambda_cv_target": 0.50,
-            "matched_reference": "pi05_v4_pair_cv050",
+            "matched_reference": "pi05_cross_view_lambda050",
             "inference_inputs": "single_scene_rgb_language_state",
         },
-    ),
-    TrainConfig(
-        name="m6_anchor_pretrain",
-        model=m6_anchor_config.Pi0M6AnchorConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            m6_feature_noise_std=0.01,
-            m6_token_dropout=0.05,
-            m6_slot_dropout=0.05,
-            m6_rank_margin=0.05,
-            m6_lambda_rank=0.5,
-            m6_preprocess_images=False,
-        ),
-        data=LeRobotLiberoCanonicalDataConfig(
-            repo_id="physical-intelligence/libero",
-            assets=AssetsConfig(
-                assets_dir="checkpoints/pi05_libero_scene/pi05_libero_scene_01/10000/assets",
-                asset_id="physical-intelligence/libero",
-            ),
-            base_config=DataConfig(prompt_from_task=True),
-            canonical_cache_h5="data/libero_canonical_cache_v3/canonical_tokens.npy",
-            include_m6_controls=True,
-            anchor_pretrain_fast_path=True,
-        ),
-        batch_size=384,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=500,
-            peak_lr=2e-4,
-            decay_steps=10_000,
-            decay_lr=5e-5,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=24,
-        weight_loader=weight_loaders.PrefixCheckpointWeightLoader(
-            "checkpoints/pi05_libero_scene/pi05_libero_scene_01/10000/params",
-            prefix="base",
-            missing_regex=".*",
-        ),
-        freeze_filter=nnx.All(nnx.Param, nnx_utils.PathRegex("base/.*")),
-        num_train_steps=10_000,
-        save_interval=1_000,
-    ),
-    TrainConfig(
-        name="m6_anchor_gated_fusion",
-        model=m6_anchor_config.Pi0M6GatedFusionConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            m6_feature_noise_std=0.005,
-            m6_token_dropout=0.02,
-            m6_slot_dropout=0.02,
-            m6_rank_margin=0.01,
-            m6_lambda_rank=0.1,
-            m6_beta_anchor=0.5,
-            m6_eta_budget=0.01,
-            m6_gate_init_logit=-2.0,
-        ),
-        data=LeRobotLiberoCanonicalDataConfig(
-            repo_id="physical-intelligence/libero",
-            assets=AssetsConfig(
-                assets_dir="checkpoints/pi05_libero_scene/pi05_libero_scene_01/10000/assets",
-                asset_id="physical-intelligence/libero",
-            ),
-            base_config=DataConfig(prompt_from_task=True),
-            canonical_cache_h5="data/libero_canonical_cache_v3/canonical_tokens.npy",
-            include_m6_controls=True,
-        ),
-        batch_size=384,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=500,
-            peak_lr=5e-5,
-            decay_steps=10_000,
-            decay_lr=1e-5,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=16,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "checkpoints/m6_anchor_pretrain/m6_anchor_pretrain_v3cache_v2rank_10k/5000/params",
-            missing_regex="gate/.*",
-        ),
-        freeze_filter=nnx.All(nnx.Param, nnx_utils.PathRegex("base/.*")),
-        num_train_steps=10_000,
-        save_interval=1_000,
-    ),
-    # ---------------------------------------------------------------------------
-    # Phase 1: Freeze all pretrained weights, train ONLY the canonical can_* params.
-    # Purpose: force the canonical cross-attention to become meaningfully useful
-    # given fixed pretrained representations — no pretrained shortcut available.
-    # Run with: uv run openpi/scripts/train.py m5_canonical_phase1 --exp_name m5_phase1 --overwrite
-    # ---------------------------------------------------------------------------
-    TrainConfig(
-        name="m5_canonical_phase1",
-        model=pi0_canonical_config.Pi0CanonicalConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            canonical_token_dropout=0.0,  # no dropout: freeze already forces canonical usage
-        ),
-        data=LeRobotLiberoCanonicalDataConfig(
-            repo_id="physical-intelligence/libero",
-            base_config=DataConfig(prompt_from_task=True),
-            canonical_cache_h5="data/libero_canonical_cache/canonical_tokens.h5",
-        ),
-        batch_size=384,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=500,
-            peak_lr=2e-4,       # 4× higher than phase2: canonical params train from scratch
-            decay_steps=5_000,
-            decay_lr=5e-5,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=16,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(lora|can_).*",
-        ),
-        # Freeze everything except can_* params.
-        freeze_filter=nnx.All(nnx.Param, nnx.Not(nnx_utils.PathRegex(".*/can_.*"))),
-        num_train_steps=5_000,
-        save_interval=1_000,
-    ),
-    # 1K control: same Phase 1 setup, but every sample receives the same fixed
-    # canonical token tensor.  This tests whether gains are merely adapter
-    # capacity / constant bias rather than sample-specific canonical content.
-    TrainConfig(
-        name="m5_canonical_phase1_constant",
-        model=pi0_canonical_config.Pi0CanonicalConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            canonical_token_dropout=0.0,
-        ),
-        data=LeRobotLiberoCanonicalDataConfig(
-            repo_id="physical-intelligence/libero",
-            assets=AssetsConfig(assets_dir="./assets/m5_canonical_phase1"),
-            base_config=DataConfig(prompt_from_task=True),
-            canonical_cache_h5="data/libero_canonical_cache/canonical_tokens.h5",
-            canonical_token_mode="constant",
-            canonical_constant_index=0,
-        ),
-        batch_size=384,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=500,
-            peak_lr=2e-4,
-            decay_steps=5_000,
-            decay_lr=5e-5,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=16,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(lora|can_).*",
-        ),
-        freeze_filter=nnx.All(nnx.Param, nnx.Not(nnx_utils.PathRegex(".*/can_.*"))),
-        num_train_steps=1_000,
-        save_interval=500,
-    ),
-    # 1K control: same Phase 1 setup, but canonical tokens are deterministically
-    # mismatched to the sample.  This tests whether the policy uses token
-    # distribution/capacity rather than image-token-action correspondence.
-    TrainConfig(
-        name="m5_canonical_phase1_shuffled",
-        model=pi0_canonical_config.Pi0CanonicalConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            canonical_token_dropout=0.0,
-        ),
-        data=LeRobotLiberoCanonicalDataConfig(
-            repo_id="physical-intelligence/libero",
-            assets=AssetsConfig(assets_dir="./assets/m5_canonical_phase1"),
-            base_config=DataConfig(prompt_from_task=True),
-            canonical_cache_h5="data/libero_canonical_cache/canonical_tokens.h5",
-            canonical_token_mode="shuffled",
-        ),
-        batch_size=384,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=500,
-            peak_lr=2e-4,
-            decay_steps=5_000,
-            decay_lr=5e-5,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=16,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(lora|can_).*",
-        ),
-        freeze_filter=nnx.All(nnx.Param, nnx.Not(nnx_utils.PathRegex(".*/can_.*"))),
-        num_train_steps=1_000,
-        save_interval=500,
-    ),
-    # ---------------------------------------------------------------------------
-    # Phase 2: Full fine-tuning loaded from phase1 checkpoint.
-    # Run with: uv run openpi/scripts/train.py m5_canonical --exp_name m5_v1 --overwrite
-    #           'weight_loader:checkpoint-weight-loader'
-    #           --weight_loader.params_path ./checkpoints/m5_canonical_phase1/m5_phase1/4999/params
-    # Stop manually at ~10K steps (same budget as M0/M1 for fair comparison).
-    # The LR schedule is designed as a proper 10K cosine (not 30K truncated) so that
-    # the full decay happens within the actual training window.
-    # ---------------------------------------------------------------------------
-    TrainConfig(
-        name="m5_canonical",
-        model=pi0_canonical_config.Pi0CanonicalConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-        ),
-        data=LeRobotLiberoCanonicalDataConfig(
-            repo_id="physical-intelligence/libero",
-            base_config=DataConfig(prompt_from_task=True),
-            canonical_cache_h5="data/libero_canonical_cache/canonical_tokens.h5",
-        ),
-        batch_size=384,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000,
-            peak_lr=5e-5,       # same peak as M0/M1 for fair comparison
-            decay_steps=10_000, # full cosine within the actual 10K window
-            decay_lr=5e-6,      # decay to 10% of peak — proper annealing
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=16,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(lora|can_).*",
-        ),
-        num_train_steps=10_000,
-    ),
-    # Phase 2 probe/final config with exact-zero canonical dropout disabled.
-    # Use this while the zero-token cross-attention path can produce NaNs.
-    TrainConfig(
-        name="m5_canonical_nodrop",
-        model=pi0_canonical_config.Pi0CanonicalConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            canonical_token_dropout=0.0,
-        ),
-        data=LeRobotLiberoCanonicalDataConfig(
-            repo_id="physical-intelligence/libero",
-            assets=AssetsConfig(assets_dir="./assets/m5_canonical"),
-            base_config=DataConfig(prompt_from_task=True),
-            canonical_cache_h5="data/libero_canonical_cache/canonical_tokens.h5",
-        ),
-        batch_size=384,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000,
-            peak_lr=5e-5,
-            decay_steps=10_000,
-            decay_lr=5e-6,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=16,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(lora|can_).*",
-        ),
-        num_train_steps=10_000,
     ),
     TrainConfig(
         name="m1_naive_mixing",
@@ -4294,424 +3595,6 @@ _CONFIGS = [
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
-    # ---------------------------------------------------------------------------
-    # ACB-VLA (Action-Grounded Canonical Bottleneck) configs
-    #
-    # Phase A — hard bottleneck, no Stage-1 teacher, LIBERO-plus multi-view data.
-    # Run: CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 uv run openpi/scripts/train.py acb_libero --exp_name acb_v1 --overwrite
-    # ---------------------------------------------------------------------------
-    TrainConfig(
-        name="acb_libero",
-        model=acb_vla_config.Pi0ACBConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            n_can=32,
-            n_det=32,
-            bottleneck_num_heads=8,
-            bottleneck_num_layers=2,
-            lambda_z=0.0,
-            lambda_var=0.01,
-            shortcut_mode="hard",
-        ),
-        data=LeRobotLiberoPlusDataConfig(
-            repo_id="data/libero_plus_camera_perturbation",
-            base_config=DataConfig(prompt_from_task=True),
-            extra_delta_transform=False,
-            use_wrist_image=False,
-            video_backend="pyav",
-        ),
-        batch_size=384,  # 32/GPU on 6×H100; 384 OOM'd (peak 91.7 GiB > 86.4 GiB pool)
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000,
-            peak_lr=5e-5,
-            decay_steps=30_000,
-            decay_lr=5e-6,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=24,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(bottleneck|z_proj|cam_adv).*",
-        ),
-        num_train_steps=30_000,
-        save_interval=2_000,
-    ),
-    # Phase A + Stage-1 teacher cosine loss (lambda_z=0.5).
-    # Requires canonical token cache; mirrors m6_anchor_pretrain data pipeline.
-    # Run: uv run openpi/scripts/train.py acb_libero_canon --exp_name acb_canon_v1 --overwrite
-    TrainConfig(
-        name="acb_libero_canon",
-        model=acb_vla_config.Pi0ACBConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            n_can=32,
-            n_det=32,
-            bottleneck_num_heads=8,
-            bottleneck_num_layers=2,
-            lambda_z=0.5,
-            lambda_var=0.01,
-            shortcut_mode="hard",
-        ),
-        data=LeRobotLiberoPlusCanonicalDataConfig(
-            repo_id="data/libero_plus_camera_perturbation",
-            base_config=DataConfig(prompt_from_task=True),
-            canonical_cache_h5=sparse_subsets.LIBERO_PLUS_CANONICAL_CACHE_H5_PATH,
-            attach_camera_bin_id=False,
-        ),
-        batch_size=384,  # 32/GPU on 6×H100
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000,
-            peak_lr=5e-5,
-            decay_steps=30_000,
-            decay_lr=5e-6,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=24,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(bottleneck|z_proj|cam_adv).*",
-        ),
-        num_train_steps=30_000,
-        save_interval=2_000,
-    ),
-    # ---------------------------------------------------------------------------
-    # Phase B schedule convention (applies to ALL Phase B configs):
-    #   warmup_steps=1_000, peak_lr=5e-5, decay_steps=30_000, decay_lr=5e-6
-    #   num_train_steps=30_000  — set universally; 10K pre-flight runs are stopped
-    #   manually at step 10K by the operator (check loss curve vs acb_v1 @ 10K).
-    #   At step 10K, LR ≈ 4.0e-5 — same point on same curve as acb_v1, so loss
-    #   values are directly comparable.  If loss is still dropping, just let it run
-    #   to 20K or 30K without any schedule change.
-    # ---------------------------------------------------------------------------
-
-    # Phase B 4.A.1 — Capacity revalidation: n_det=8 on full LIBERO-plus.
-    # Stop manually at step 10K; compare loss curve to acb_v1 @ 10K.
-    # If within ~5%, skip full eval and proceed to 4.B.
-    # Run: CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 XLA_PYTHON_CLIENT_MEM_FRACTION=0.98 \
-    #      uv run openpi/scripts/train.py acb_full_ndet8 --exp_name acb_full_ndet8_v1 --overwrite
-    TrainConfig(
-        name="acb_full_ndet8",
-        model=acb_vla_config.Pi0ACBConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            n_can=32,
-            n_det=8,
-            bottleneck_num_heads=8,
-            bottleneck_num_layers=2,
-            lambda_z=0.0,
-            lambda_var=0.01,
-            shortcut_mode="hard",
-        ),
-        data=LeRobotLiberoPlusDataConfig(
-            repo_id="data/libero_plus_camera_perturbation",
-            base_config=DataConfig(prompt_from_task=True),
-            extra_delta_transform=False,
-            use_wrist_image=False,
-            video_backend="pyav",
-        ),
-        batch_size=384,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000,
-            peak_lr=5e-5,
-            decay_steps=30_000,
-            decay_lr=5e-6,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=24,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(bottleneck|z_proj|cam_adv).*",
-        ),
-        num_train_steps=30_000,
-        save_interval=2_000,
-    ),
-    # Phase B 4.A.2 fallback — only run if acb_full_ndet8 < acb_v1_final − 5pp.
-    # Same Phase B schedule convention (stop manually at 10K; extend if loss still dropping).
-    TrainConfig(
-        name="acb_full_ndet16",
-        model=acb_vla_config.Pi0ACBConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            n_can=32,
-            n_det=16,
-            bottleneck_num_heads=8,
-            bottleneck_num_layers=2,
-            lambda_z=0.0,
-            lambda_var=0.01,
-            shortcut_mode="hard",
-        ),
-        data=LeRobotLiberoPlusDataConfig(
-            repo_id="data/libero_plus_camera_perturbation",
-            base_config=DataConfig(prompt_from_task=True),
-            extra_delta_transform=False,
-            use_wrist_image=False,
-            video_backend="pyav",
-        ),
-        batch_size=384,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000,
-            peak_lr=5e-5,
-            decay_steps=30_000,
-            decay_lr=5e-6,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=24,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(bottleneck|z_proj|cam_adv).*",
-        ),
-        num_train_steps=30_000,
-        save_interval=2_000,
-    ),
-    # ---------------------------------------------------------------------------
-    # Phase B 4.C Run 1 — sparse_pi05: data-only baseline (no bottleneck, no GRL, no teacher).
-    # Same 30K Phase B schedule as all other Phase B runs for valid internal comparison.
-    # Data: 30% k-center sparse LIBERO-plus subset defined in canonical/data/sparse_subsets.py.
-    # Run: CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 XLA_PYTHON_CLIENT_MEM_FRACTION=0.98 \
-    #      uv run openpi/scripts/train.py sparse_pi05 --exp_name sparse_pi05_v1 --overwrite
-    # ---------------------------------------------------------------------------
-    _phase_b_train_config(
-        "sparse_pi05",
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
-        data=_phase_b_sparse_data_config(_SPARSE_PRIMARY_SUBSET, attach_camera_bin_id=False),
-        missing_regex=None,
-    ),
-    # Phase B 4.C Run 2 — architecture-only sparse ACB baseline.
-    _phase_b_train_config(
-        "sparse_acb_capacity",
-        model=_phase_b_acb_model(n_det=_PHASE_B_SELECTED_N_DET),
-        data=_phase_b_sparse_data_config(_SPARSE_PRIMARY_SUBSET, attach_camera_bin_id=True),
-    ),
-    # Phase B 4.C Run 3 — GRL main effect.
-    _phase_b_train_config(
-        "sparse_acb_grl",
-        model=_phase_b_acb_model(
-            n_det=_PHASE_B_SELECTED_N_DET,
-            lambda_cam_max=_PHASE_B_GRL_LAMBDA_CAM_MAX,
-        ),
-        data=_phase_b_sparse_data_config(_SPARSE_PRIMARY_SUBSET, attach_camera_bin_id=True),
-    ),
-    # Phase B 4.C Run 3.5 — teacher main effect.
-    _phase_b_train_config(
-        "sparse_acb_teacher",
-        model=_phase_b_acb_model(
-            n_det=_PHASE_B_SELECTED_N_DET,
-            lambda_z_max=_PHASE_B_TEACHER_LAMBDA_Z_MAX,
-            teacher_mode="matched",
-        ),
-        data=_phase_b_sparse_canonical_data_config(
-            _SPARSE_PRIMARY_SUBSET,
-            canonical_token_mode="matched",
-            attach_camera_bin_id=False,
-        ),
-    ),
-    # Phase B 4.C Run 4 — main sparse method (GRL + matched teacher).
-    _phase_b_train_config(
-        "sparse_acb_full",
-        model=_phase_b_acb_model(
-            n_det=_PHASE_B_SELECTED_N_DET,
-            lambda_cam_max=_PHASE_B_GRL_LAMBDA_CAM_MAX,
-            lambda_z_max=_PHASE_B_TEACHER_LAMBDA_Z_MAX,
-            teacher_mode="matched",
-        ),
-        data=_phase_b_sparse_canonical_data_config(
-            _SPARSE_PRIMARY_SUBSET,
-            canonical_token_mode="matched",
-            attach_camera_bin_id=True,
-        ),
-    ),
-    # ---------------------------------------------------------------------------
-    # Phase B v3 — sparse_acb_full_v3: corrective run replacing GRL+CE with
-    # split discriminator + KL(q||prior) confusion after v1 (sparse_acb_full)
-    # exhibited adversarial mode collapse at step 2500 (cam_cls_acc=0.013,
-    # loss_cam=19.99 >> log(K)=2.08, budget ratio 25:1 over L_flow).
-    # Historical v3 diagnosis was removed from internal notes on the v4 cleanup branch;
-    # recover it from git history if needed.
-    #
-    # Pre-flight: run scripts/fit_camera_prior.py to create assets/camera_prior_kcenter30.npy.
-    # Run: CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 XLA_PYTHON_CLIENT_MEM_FRACTION=0.98 \
-    #      uv run openpi/scripts/train.py sparse_acb_full_v3 --exp_name sparse_acb_full_v3 --overwrite
-    # ---------------------------------------------------------------------------
-    _phase_b_train_config(
-        "sparse_acb_full_v3",
-        model=_phase_b_acb_model_v3(n_det=_PHASE_B_SELECTED_N_DET),
-        data=_phase_b_sparse_canonical_data_config(
-            _SPARSE_PRIMARY_SUBSET,
-            canonical_token_mode="matched",
-            attach_camera_bin_id=True,
-        ),
-    ),
-    # ---------------------------------------------------------------------------
-    # Phase B v3.1 — sparse_acb_full_v3_1: corrective re-launch after v3 v1.0
-    # step 500 health gate failed (cam_cls_acc_head=0.237 < 0.40, KL_raw=0.0034
-    # << 0.5; b_det_feat_std falling at ~2× v1's rate). Two changes per plan
-    # §5.5 diagnosis matrix and first-principles bootstrap analysis:
-    #   - lambda_head: 1.0 → 2.0   (raise classifier learning rate)
-    #   - lambda_feat_warmup: True → False  (drop redundant sigmoid warmup;
-    #     KL itself bootstraps as classifier learns)
-    # Historical v3 diagnosis was removed from internal notes on the v4 cleanup branch;
-    # recover it from git history if needed. 
-    # Run: XLA_PYTHON_CLIENT_MEM_FRACTION=0.98 \
-    #      uv run openpi/scripts/train.py sparse_acb_full_v3_1 \
-    #          --exp_name sparse_acb_full_v3_1 --overwrite
-    # ---------------------------------------------------------------------------
-    _phase_b_train_config(
-        "sparse_acb_full_v3_1",
-        model=_phase_b_acb_model_v3_1(n_det=_PHASE_B_SELECTED_N_DET),
-        data=_phase_b_sparse_canonical_data_config(
-            _SPARSE_PRIMARY_SUBSET,
-            canonical_token_mode="matched",
-            attach_camera_bin_id=True,
-        ),
-    ),
-    # Phase B 4.C Run 5 — shuffled teacher content control.
-    _phase_b_train_config(
-        "sparse_acb_shuffled",
-        model=_phase_b_acb_model(
-            n_det=_PHASE_B_SELECTED_N_DET,
-            lambda_cam_max=_PHASE_B_GRL_LAMBDA_CAM_MAX,
-            lambda_z_max=_PHASE_B_TEACHER_LAMBDA_Z_MAX,
-            teacher_mode="shuffled",
-        ),
-        data=_phase_b_sparse_canonical_data_config(
-            _SPARSE_PRIMARY_SUBSET,
-            canonical_token_mode="shuffled",
-            attach_camera_bin_id=True,
-        ),
-    ),
-    # ---------------------------------------------------------------------------
-    # Phase B 4.L survival test Run 5.5 — episode-random teacher (G2b control).
-    # Strongest consistency-only control: teacher is a fixed random vector per episode_id.
-    # If matched > episode_random + 3pp (G2b), Stage-1 geometry content is causal.
-    # Run: ... uv run openpi/scripts/train.py sparse_acb_episode_random --exp_name sparse_acb_er_v1 --overwrite
-    # ---------------------------------------------------------------------------
-    _phase_b_train_config(
-        "sparse_acb_episode_random",
-        model=_phase_b_acb_model(
-            n_det=_PHASE_B_SELECTED_N_DET,
-            lambda_cam_max=_PHASE_B_GRL_LAMBDA_CAM_MAX,
-            lambda_z_max=_PHASE_B_TEACHER_LAMBDA_Z_MAX,
-            teacher_mode="episode_random",
-        ),
-        data=_phase_b_sparse_data_config(_SPARSE_PRIMARY_SUBSET, attach_camera_bin_id=True),
-    ),
-    # Phase B 4.C Run 6 — no-detail ablation.
-    _phase_b_train_config(
-        "sparse_acb_nodetail",
-        model=_phase_b_acb_model(
-            n_det=0,
-            lambda_cam_max=_PHASE_B_GRL_LAMBDA_CAM_MAX,
-            lambda_z_max=_PHASE_B_TEACHER_LAMBDA_Z_MAX,
-            teacher_mode="matched",
-        ),
-        data=_phase_b_sparse_canonical_data_config(
-            _SPARSE_PRIMARY_SUBSET,
-            canonical_token_mode="matched",
-            attach_camera_bin_id=True,
-        ),
-    ),
-    # Phase B 4.C Run 7 — high-detail free-rider check.
-    _phase_b_train_config(
-        "sparse_acb_highdetail",
-        model=_phase_b_acb_model(
-            n_det=32,
-            lambda_cam_max=_PHASE_B_GRL_LAMBDA_CAM_MAX,
-            lambda_z_max=_PHASE_B_TEACHER_LAMBDA_Z_MAX,
-            teacher_mode="matched",
-        ),
-        data=_phase_b_sparse_canonical_data_config(
-            _SPARSE_PRIMARY_SUBSET,
-            canonical_token_mode="matched",
-            attach_camera_bin_id=True,
-        ),
-    ),
-
-    # ---------------------------------------------------------------------------
-    # Ablation: same as acb_libero but no hard bottleneck (action expert can attend to image).
-    # Used to isolate the contribution of the bottleneck constraint (shortcut_mode='none').
-    TrainConfig(
-        name="acb_libero_no_shortcut",
-        model=acb_vla_config.Pi0ACBConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            n_can=32,
-            n_det=32,
-            bottleneck_num_heads=8,
-            bottleneck_num_layers=2,
-            lambda_z=0.0,
-            lambda_var=0.01,
-            shortcut_mode="none",
-        ),
-        data=LeRobotLiberoPlusDataConfig(
-            repo_id="data/libero_plus_camera_perturbation",
-            base_config=DataConfig(prompt_from_task=True),
-            extra_delta_transform=False,
-            use_wrist_image=False,
-            video_backend="pyav",
-        ),
-        batch_size=384,  # 32/GPU on 6×H100
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000,
-            peak_lr=5e-5,
-            decay_steps=30_000,
-            decay_lr=5e-6,
-        ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        num_workers=24,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(bottleneck|z_proj|cam_adv).*",
-        ),
-        num_train_steps=30_000,
-        save_interval=2_000,
-    ),
-    # ---------------------------------------------------------------------------
-    # Phase B geometry/camera baseline (G7 gate) — camera-conditioned pi0.5.
-    #
-    # Pi0.5 + K=8 camera-bin embedding token in prefix.  Camera label is used at
-    # BOTH training AND inference.  This is NOT an RGB-only policy.
-    #
-    # Purpose: quantify the G7 gap = ACB_main − camera_conditioned_pi05.
-    #   ≤ 3pp gap → ACB competitive with camera-aware method (headline result)
-    #   3–8pp gap → reposition ACB as "RGB-only at moderate cost" trade-off
-    #   > 8pp gap → RGB-only claim not viable; paper positioning needs revision
-    #
-    # Run: ... uv run openpi/scripts/train.py camera_conditioned_pi05 --exp_name cam_cond_v1 --overwrite
-    # NOTE: camera_bin_id must be populated in the data pipeline from assets/camera_bins_k8.parquet.
-    #       The matching ACB sparse run is sparse_acb_full (Run 4 of the Phase B grid).
-    #       Use the SAME sparse data subset for a fair comparison.
-    # ---------------------------------------------------------------------------
-    TrainConfig(
-        name="camera_conditioned_pi05",
-        model=pi0_camera.Pi0CameraConfig(
-            pi05=True,
-            action_horizon=10,
-            discrete_state_input=False,
-            camera_bin_k=8,
-        ),
-        data=_phase_b_sparse_data_config(_SPARSE_PRIMARY_SUBSET, attach_camera_bin_id=True),
-        batch_size=_PHASE_B_BATCH_SIZE,
-        lr_schedule=_phase_b_schedule(),
-        optimizer=_phase_b_optimizer(),
-        ema_decay=0.999,
-        num_workers=_PHASE_B_NUM_WORKERS,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(camera_embed).*",
-        ),
-        num_train_steps=_PHASE_B_NUM_TRAIN_STEPS,
-        save_interval=_PHASE_B_SAVE_INTERVAL,
-    ),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):

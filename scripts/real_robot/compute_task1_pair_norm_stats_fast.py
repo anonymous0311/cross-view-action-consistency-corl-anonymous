@@ -11,7 +11,7 @@ import openpi.shared.normalize as normalize
 import pyarrow.parquet as pq
 
 REPO_DEFAULT = Path("data/real_robot/task1_pair")
-OUTPUT_DEFAULT = Path("assets/pi05_realman_task1_b6b/anonymous/realman_task1_corl")
+OUTPUT_DEFAULT = Path("assets/pi05_realman_task1_cross_view_action_consistency/anonymous/realman_task1_corl")
 
 
 def _fixed_list_column_to_numpy(table, name: str) -> np.ndarray:

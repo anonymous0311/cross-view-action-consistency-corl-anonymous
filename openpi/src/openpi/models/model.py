@@ -106,23 +106,18 @@ class Observation(Generic[ArrayT]):
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
 
-    # Canonical spatial tokens from Stage 1 pretraining (optional).
-    # Shape: [*b, N_canonical, D_canonical] — e.g. [B, 128, 512] for m5_canonical.
+    # Optional auxiliary spatial tokens. Disabled by all cross-view action consistency configs.
     canonical_tokens: at.Float[ArrayT, "*b n d"] | None = None
-    # M6 canonical-action-anchor controls. `canonical_tokens_neg` is a
-    # mismatched token tensor; `canonical_tokens_mean` is a constant/batch-mean
-    # control tensor. Both have the same shape as canonical_tokens.
+    # Optional control tensors with the same shape as canonical_tokens.
     canonical_tokens_neg: at.Float[ArrayT, "*b n d"] | None = None
     canonical_tokens_mean: at.Float[ArrayT, "*b n d"] | None = None
 
-    # Optional dataset metadata used by M6 to construct same-task,
-    # different-episode hard negatives within a batch.
+    # Optional dataset metadata.
     task_index: at.Int[ArrayT, "*b"] | None = None
     episode_index: at.Int[ArrayT, "*b"] | None = None
     sample_index: at.Int[ArrayT, "*b"] | None = None
 
-    # Camera K-means bin assignment (integer 0..K-1) per example.
-    # Used for Phase B camera adversarial GRL training. None = not provided.
+    # Optional camera-label metadata. None for cross-view action consistency training and inference.
     camera_bin_id: at.Int[ArrayT, "*b"] | None = None
 
     @classmethod

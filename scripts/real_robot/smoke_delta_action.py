@@ -29,7 +29,7 @@ import pyarrow.parquet as pq
 from openpi import transforms as _transforms
 
 REPO_DEFAULT = Path("data/real_robot/task123_pair")
-NORM_STATS_DEFAULT = Path("assets/pi05_realman_task123_b6b_delta/anonymous/realman_task123_corl_delta")
+NORM_STATS_DEFAULT = Path("assets/pi05_realman_task123_cross_view_action_consistency_delta/anonymous/realman_task123_corl_delta")
 ACTION_HORIZON = 10
 MASK_SPEC = (7, -1)  # 7 True, 1 False — joints get delta, gripper stays absolute.
 

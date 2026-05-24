@@ -266,35 +266,6 @@ def train_step(
         "param_norm": optax.global_norm(kernel_params),
     }
 
-    # Canonical cross-attention diagnostics — logged only when canonical tokens are present.
-    # canonical/token_norm:  mean L2 norm of the input canonical tokens (should be ~non-zero from step 0)
-    # canonical/can_out_norm: Frobenius norm of can_out/kernel (zero-init; grows as canonical cross-attn activates)
-    # canonical/param_norm:  global norm of all can_* kernels (tracks overall learning in canonical cross-attn)
-    if observation.canonical_tokens is not None:
-        info["canonical/token_norm"] = jnp.mean(
-            jnp.linalg.norm(observation.canonical_tokens, axis=-1)
-        )
-        if observation.canonical_tokens_neg is not None:
-            info["canonical/token_neg_norm"] = jnp.mean(
-                jnp.linalg.norm(observation.canonical_tokens_neg, axis=-1)
-            )
-        if observation.canonical_tokens_mean is not None:
-            info["canonical/token_mean_norm"] = jnp.mean(
-                jnp.linalg.norm(observation.canonical_tokens_mean, axis=-1)
-            )
-        can_all = nnx.state(model, nnx.All(nnx.Param, nnx_utils.PathRegex(".*/can_.*/kernel")))
-        can_out = nnx.state(model, nnx.All(nnx.Param, nnx_utils.PathRegex(".*/can_out/kernel")))
-        if jax.tree_util.tree_leaves(can_all):
-            info["canonical/param_norm"] = optax.global_norm(can_all)
-        if jax.tree_util.tree_leaves(can_out):
-            info["canonical/can_out_norm"] = optax.global_norm(can_out)
-        anchor_params = nnx.state(model, nnx.All(nnx.Param, nnx_utils.PathRegex("anchor/.*")))
-        if jax.tree_util.tree_leaves(anchor_params):
-            info["m6_anchor/param_norm"] = optax.global_norm(anchor_params)
-        gate_params = nnx.state(model, nnx.All(nnx.Param, nnx_utils.PathRegex("gate/.*")))
-        if jax.tree_util.tree_leaves(gate_params):
-            info["m6_anchor/gate_param_norm"] = optax.global_norm(gate_params)
-
     return new_state, info
 
 

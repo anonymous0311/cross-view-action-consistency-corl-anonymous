@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export Task1/2/3 CoRL realman datasets into one v4 pair LeRobot repo."""
+"""Export Task1/2/3 CoRL realman datasets into one cross-view pair LeRobot repo."""
 
 from __future__ import annotations
 

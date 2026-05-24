@@ -6,7 +6,7 @@ Outputs:
   paper/figures/category_breakdown_ci.pdf — C1/C2/C3 grouped bar chart
 
 Run from the repository root:
-  python code/scripts/figure/figure_main_results_ci.py
+  python scripts/figure/figure_main_results_ci.py
 """
 
 import math

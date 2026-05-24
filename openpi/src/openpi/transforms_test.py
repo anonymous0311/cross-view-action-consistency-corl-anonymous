@@ -2,8 +2,6 @@ import numpy as np
 import pytest
 
 import openpi.models.tokenizer as _tokenizer
-from openpi.models import model as _model
-from openpi.policies import libero_policy as _libero_policy
 import openpi.transforms as _transforms
 
 
@@ -121,26 +119,3 @@ def test_extract_prompt_from_task():
 
     with pytest.raises(ValueError, match="task_index=2 not found in task mapping"):
         transform({"task_index": 2})
-
-
-def test_camera_bin_id_from_episode_index():
-    transform = _transforms.CameraBinIDFromEpisodeIndex({7: 3})
-
-    data = transform({"episode_index": np.asarray(7, dtype=np.int64)})
-
-    assert data["camera_bin_id"].dtype == np.int32
-    assert int(data["camera_bin_id"]) == 3
-
-
-def test_libero_inputs_pass_through_camera_bin_id():
-    transform = _libero_policy.LiberoInputs(model_type=_model.ModelType.PI05, use_wrist_image=False)
-
-    output = transform(
-        {
-            "observation/state": np.zeros(8, dtype=np.float32),
-            "observation/image": np.zeros((224, 224, 3), dtype=np.uint8),
-            "camera_bin_id": np.asarray(5, dtype=np.int32),
-        }
-    )
-
-    assert int(output["camera_bin_id"]) == 5

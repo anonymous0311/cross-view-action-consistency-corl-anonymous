@@ -5,17 +5,17 @@ Four vertical bars: K=1 matched, K=1 shuffled, K=2 matched, K=2 shuffled.
 K=1 in blue, K=2 in green; shuffled bars use hatch to distinguish from matched.
 
 Data sources (LIBERO-Plus camera track, full 4797 unless noted):
-  K=1 matched  : A2 (pi05_v4_pair_cv010_no_spatial_aug), 4073/4797 = 84.9%
-  K=1 shuffled : phase0b clean-wrong cv010,              2416/4797 = 50.4%
-  K=2 matched  : B6b bilateral, mean over 3 seeds = 87.2% ± 0.4 pp
-  K=2 shuffled : B6b clean-wrong, screen-120 subset,       93/360  = 25.8%  (*)
+  K=1 matched  : pi05_cross_view_single_sample, 4073/4797 = 84.9%
+  K=1 shuffled : single-sample clean-wrong control,         2416/4797 = 50.4%
+  K=2 matched  : cross_view_action_consistency bilateral, mean over 3 seeds = 87.2% ± 0.4 pp
+  K=2 shuffled : cross_view_action_consistency clean-wrong, screen-120 subset,       93/360  = 25.8%  (*)
 
 (*) Full eval not run; screen-120 collapse (25.8%) is already decisive.
 
 Output: paper/figures/pair_control.pdf
 
 Run from repository root:
-  python code/scripts/figure/figure_pair_control.py
+  python scripts/figure/figure_pair_control.py
 """
 
 import math

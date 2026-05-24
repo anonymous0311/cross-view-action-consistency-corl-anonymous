@@ -29,13 +29,9 @@ class Pi0Config(_model.BaseModelConfig):
     # - the state input is part of the discrete language tokens rather than a continuous input that is part of the suffix
     # - the action expert uses adaRMSNorm to inject the flow matching timestep
     pi05: bool = False
-    # Dimension of canonical tokens fed to action expert cross-attention.
-    # 0 = disabled (vanilla π0.5); set to 512 for m5_canonical.
+    # Optional auxiliary-token context dimension. Disabled by default.
     canonical_dim: int = 0
-    # During training, zero out the entire canonical_tokens tensor with this probability.
-    # Forces the model to develop a "without canonical" fallback, and creates a gradient
-    # contrast that incentivises the canonical path to be genuinely useful.
-    # 0.0 = no dropout; 0.1 = 10% of batches see zeros instead of canonical features.
+    # During training, zero out the entire auxiliary-token tensor with this probability.
     canonical_token_dropout: float = 0.0
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore

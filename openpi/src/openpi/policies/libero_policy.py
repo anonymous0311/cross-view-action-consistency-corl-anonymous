@@ -107,20 +107,12 @@ class LiberoInputs(transforms.DataTransformFn):
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
 
-        if "canonical_tokens" in data:
-            inputs["canonical_tokens"] = data["canonical_tokens"]
-        if "canonical_tokens_neg" in data:
-            inputs["canonical_tokens_neg"] = data["canonical_tokens_neg"]
-        if "canonical_tokens_mean" in data:
-            inputs["canonical_tokens_mean"] = data["canonical_tokens_mean"]
         if "task_index" in data:
             inputs["task_index"] = data["task_index"]
         if "episode_index" in data:
             inputs["episode_index"] = data["episode_index"]
         if "sample_index" in data:
             inputs["sample_index"] = data["sample_index"]
-        if "camera_bin_id" in data:
-            inputs["camera_bin_id"] = data["camera_bin_id"]
 
         return inputs
 
@@ -158,27 +150,19 @@ class LiberoSceneInputs(transforms.DataTransformFn):
             inputs["actions"] = data["actions"]
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
-        if "canonical_tokens" in data:
-            inputs["canonical_tokens"] = data["canonical_tokens"]
-        if "canonical_tokens_neg" in data:
-            inputs["canonical_tokens_neg"] = data["canonical_tokens_neg"]
-        if "canonical_tokens_mean" in data:
-            inputs["canonical_tokens_mean"] = data["canonical_tokens_mean"]
         if "task_index" in data:
             inputs["task_index"] = data["task_index"]
         if "episode_index" in data:
             inputs["episode_index"] = data["episode_index"]
         if "sample_index" in data:
             inputs["sample_index"] = data["sample_index"]
-        if "camera_bin_id" in data:
-            inputs["camera_bin_id"] = data["camera_bin_id"]
 
         return inputs
 
 
 @dataclasses.dataclass(frozen=True)
 class LiberoPairInputs(transforms.DataTransformFn):
-    """LIBERO same-state pair inputs for Phase 0B cross-view consistency.
+    """LIBERO same-state pair inputs for cross-view consistency.
 
     The output keeps a pair axis in image/state/action fields:
 
@@ -248,48 +232,6 @@ class LiberoPairTokenInputs(transforms.DataTransformFn):
                 if value.ndim == 0 or value.shape[0] != 2:
                     data[key] = np.stack([value, value], axis=0)
         return data
-
-
-@dataclasses.dataclass(frozen=True)
-class LiberoAnchorInputs(transforms.DataTransformFn):
-    """LIBERO inputs for M6-A, where RGB is unused and canonical tokens are precomputed."""
-
-    def __call__(self, data: dict) -> dict:
-        dummy_image = np.zeros((1, 1, 3), dtype=np.float32)
-        inputs = {
-            "state": data["observation/state"],
-            "image": {
-                "base_0_rgb": dummy_image,
-                "left_wrist_0_rgb": dummy_image,
-                "right_wrist_0_rgb": dummy_image,
-            },
-            "image_mask": {
-                "base_0_rgb": np.False_,
-                "left_wrist_0_rgb": np.False_,
-                "right_wrist_0_rgb": np.False_,
-            },
-        }
-
-        if "actions" in data:
-            inputs["actions"] = data["actions"]
-        if "prompt" in data:
-            inputs["prompt"] = data["prompt"]
-        if "canonical_tokens" in data:
-            inputs["canonical_tokens"] = data["canonical_tokens"]
-        if "canonical_tokens_neg" in data:
-            inputs["canonical_tokens_neg"] = data["canonical_tokens_neg"]
-        if "canonical_tokens_mean" in data:
-            inputs["canonical_tokens_mean"] = data["canonical_tokens_mean"]
-        if "task_index" in data:
-            inputs["task_index"] = data["task_index"]
-        if "episode_index" in data:
-            inputs["episode_index"] = data["episode_index"]
-        if "sample_index" in data:
-            inputs["sample_index"] = data["sample_index"]
-        if "camera_bin_id" in data:
-            inputs["camera_bin_id"] = data["camera_bin_id"]
-
-        return inputs
 
 
 @dataclasses.dataclass(frozen=True)

@@ -32,9 +32,6 @@ class Args:
     task_specs: str = ""
     max_tasks_per_condition: int | None = None
     resume: bool = False
-    # M5 canonical support
-    stage1_checkpoint: str = ""
-    stage1_config: str = "configs/stage1_v3_slotnce.yaml"
     allow_gpu_oversubscription: bool = False
 
 
@@ -62,8 +59,6 @@ def _parse_args() -> Args:
         parser.add_argument("--task-specs", default=Args.task_specs)
         parser.add_argument("--max-tasks-per-condition", type=int, default=None)
         parser.add_argument("--resume", action="store_true")
-        parser.add_argument("--stage1-checkpoint", default="")
-        parser.add_argument("--stage1-config", default=Args.stage1_config)
         parser.add_argument("--allow-gpu-oversubscription", action="store_true")
         ns = parser.parse_args()
         return Args(
@@ -82,8 +77,6 @@ def _parse_args() -> Args:
             task_specs=ns.task_specs,
             max_tasks_per_condition=ns.max_tasks_per_condition,
             resume=ns.resume,
-            stage1_checkpoint=ns.stage1_checkpoint,
-            stage1_config=ns.stage1_config,
             allow_gpu_oversubscription=ns.allow_gpu_oversubscription,
         )
 
@@ -193,9 +186,6 @@ def main(args: Args) -> None:
             cmd += ["--max-tasks-per-condition", str(args.max_tasks_per_condition)]
         if args.resume:
             cmd.append("--resume")
-        if args.stage1_checkpoint:
-            cmd += ["--stage1-checkpoint", args.stage1_checkpoint,
-                    "--stage1-config", args.stage1_config]
 
         env = env_base.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu_id

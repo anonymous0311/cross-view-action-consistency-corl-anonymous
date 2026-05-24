@@ -24,7 +24,7 @@ import openpi.shared.normalize as normalize
 import pyarrow.parquet as pq
 
 REPO_DEFAULT = Path("data/real_robot/task123_pair")
-OUTPUT_DEFAULT = Path("assets/pi05_realman_task123_b6b_delta/anonymous/realman_task123_corl_delta")
+OUTPUT_DEFAULT = Path("assets/pi05_realman_task123_cross_view_action_consistency_delta/anonymous/realman_task123_corl_delta")
 TRAIN_SPLIT_DEFAULT = "0:128,144:210,218:304"
 # Joints get delta; final dim (gripper) stays absolute. Length 8.
 DELTA_MASK_DEFAULT = (True, True, True, True, True, True, True, False)

@@ -302,17 +302,6 @@ def load_pi05_checkpoint(
     )
 
 
-class CanonicalInferenceExtractor:
-    """Compatibility stub for removed on-the-fly canonical-token extraction."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        del args, kwargs
-        raise RuntimeError(
-            "On-the-fly legacy Stage-1 canonical-token extraction is not included in this public release. "
-            "Use precomputed canonical-token datasets or the current cross-view action-consistency configs."
-        )
-
-
 def _get_benchmark_module() -> Any:
     ensure_libero_plus_runtime()
     from libero.libero import benchmark  # noqa: PLC0415
@@ -370,10 +359,9 @@ def build_policy_observation(
     resize_size: int = 224,
     use_wrist_image: bool,
     mask_scene: bool = False,
-    canonical_extractor: "CanonicalInferenceExtractor | None" = None,
     image_flip_mode: str = "both",
 ) -> dict[str, Any]:
-    # OpenPI's official LIBERO eval uses "both". Local Phase0A rerendered
+    # OpenPI's official LIBERO eval uses "both". LIBERO rerendered
     # images were exported with only flipud, so keep eval orientation explicit.
     raw_img = _orient_libero_image(obs["agentview_image"], image_flip_mode)
     base_img = np.zeros_like(raw_img) if mask_scene else raw_img
@@ -396,11 +384,6 @@ def build_policy_observation(
         policy_obs["observation/wrist_image"] = image_tools.convert_to_uint8(
             image_tools.resize_with_pad(wrist_img, resize_size, resize_size)
         )
-    # Inject canonical tokens when extractor is available.
-    # When mask_scene=True we omit canonical tokens too so the masking check
-    # tests full scene-camera dependency (both visual and spatial pathways zeroed).
-    if canonical_extractor is not None and not mask_scene:
-        policy_obs["canonical_tokens"] = canonical_extractor.extract(raw_img)
     return policy_obs
 
 
@@ -559,7 +542,6 @@ def rollout_episode(
     initial_state: np.ndarray,
     use_wrist_image: bool,
     mask_scene: bool = False,
-    canonical_extractor: "CanonicalInferenceExtractor | None" = None,
     image_flip_mode: str = "both",
 ) -> dict[str, Any]:
     reset_obs = env.reset()
@@ -583,7 +565,6 @@ def rollout_episode(
                 resize_size=rollout_config.resize_size,
                 use_wrist_image=use_wrist_image,
                 mask_scene=mask_scene,
-                canonical_extractor=canonical_extractor,
                 image_flip_mode=image_flip_mode,
             )
             action_chunk = np.asarray(policy.infer(policy_obs)["actions"])
@@ -622,7 +603,6 @@ def rollout_episode_batched(
     initial_states: list[Any],
     use_wrist_image: bool,
     mask_scene: bool = False,
-    canonical_extractor: "CanonicalInferenceExtractor | None" = None,
     image_flip_mode: str = "both",
     env_executor: Any = None,
 ) -> list[dict[str, Any]]:
@@ -631,10 +611,10 @@ def rollout_episode_batched(
     All envs share the same task_description and rollout_config (they are different
     trials of the same task). Each env independently resets to its own initial_state.
 
-    Image orientation (image_flip_mode), wrist image inclusion, mask_scene zeroing,
-    and canonical token injection are applied per env via build_policy_observation,
-    exactly as in the sequential rollout; the batching happens at the model call
-    only, not at the observation builder.
+    Image orientation (image_flip_mode), wrist image inclusion, and mask_scene
+    zeroing are applied per env via build_policy_observation, exactly as in the
+    sequential rollout; the batching happens at the model call only, not at the
+    observation builder.
 
     Done envs are skipped from further env.step() calls but kept in the inference
     batch (their slot is ignored when collecting actions) so the JIT-compiled
@@ -705,7 +685,6 @@ def rollout_episode_batched(
                         resize_size=rollout_config.resize_size,
                         use_wrist_image=use_wrist_image,
                         mask_scene=mask_scene,
-                        canonical_extractor=canonical_extractor,
                         image_flip_mode=image_flip_mode,
                     )
                 )
@@ -788,7 +767,6 @@ class LIBEROPlusCameraEvaluator:
         base_seed: int = 7,
         use_wrist_image: bool = False,
         progress_every: int = 25,
-        canonical_extractor: "CanonicalInferenceExtractor | None" = None,
         image_flip_mode: str = "both",
     ) -> None:
         ensure_libero_plus_runtime()
@@ -804,7 +782,6 @@ class LIBEROPlusCameraEvaluator:
         self.rollout_config = rollout_config or RolloutConfig(max_steps=0)
         self.raw_rows: list[TrialResult] = []
         self.evaluation_log_path = self.results_dir / "evaluation_log.txt"
-        self.canonical_extractor = canonical_extractor
         if image_flip_mode not in {"both", "flipud", "fliplr", "none"}:
             raise ValueError("image_flip_mode must be one of: both, flipud, fliplr, none")
         self.image_flip_mode = image_flip_mode
@@ -883,7 +860,6 @@ class LIBEROPlusCameraEvaluator:
                 initial_states=initial_states_used,
                 use_wrist_image=self.use_wrist_image,
                 mask_scene=mask_scene,
-                canonical_extractor=self.canonical_extractor,
                 image_flip_mode=self.image_flip_mode,
                 env_executor=None,
             )
@@ -1053,7 +1029,6 @@ def evaluate_with_scene_camera_masked(
     n_trials: int = 20,
     condition: str = "nominal",
 ) -> dict[str, Any]:
-    # Note: mask_scene=True suppresses canonical_extractor too (see build_policy_observation)
     """Sanity check: zero the scene camera and evaluate."""
     if condition != "nominal":
         raise ValueError("Only condition='nominal' is supported for the masking sanity check.")
@@ -1082,7 +1057,6 @@ def evaluate_with_scene_camera_masked(
                     initial_state=initial_states[trial_index],
                     use_wrist_image=evaluator.use_wrist_image,
                     mask_scene=True,
-                    canonical_extractor=evaluator.canonical_extractor,
                     image_flip_mode=evaluator.image_flip_mode,
                 )
                 raw_rows.append(

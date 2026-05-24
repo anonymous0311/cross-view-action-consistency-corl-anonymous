@@ -7,7 +7,7 @@ Grouped bar chart: C1 / C2 / C3 on x-axis, two bars per group
 Output: paper/figures/category_breakdown.pdf
 
 Run from repository root:
-  python code/scripts/figure/figure_category_breakdown.py
+  python scripts/figure/figure_category_breakdown.py
 """
 
 import math

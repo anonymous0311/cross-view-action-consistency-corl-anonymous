@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export Task1_CoRL into the pair layout used by v4 cross-view training.
+"""Export Task1_CoRL into the pair layout used by cross-view training.
 
 The source dataset has one episode with three synchronized scene-camera videos:
 
@@ -7,7 +7,7 @@ The source dataset has one episode with three synchronized scene-camera videos:
   observation.images.purturbated_c1_image
   observation.images.purturbated_c2_image
 
-The v4 pair dataloader expects one nominal/perturbed pair per row:
+The cross-view pair dataloader expects one nominal/perturbed pair per row:
 
   observation.images.front
   observation.images.perturbed

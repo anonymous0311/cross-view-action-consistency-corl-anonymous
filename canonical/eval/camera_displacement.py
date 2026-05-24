@@ -1,4 +1,4 @@
-"""Camera displacement utilities for LIBERO Phase-0 evaluation."""
+"""Camera displacement utilities for LIBERO camera-robustness evaluation."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import numpy as np
 DISPLACEMENT_CONFIGS: dict[str, dict[str, tuple[float, float, float]]] = {
     # Translation units are meters in world-frame XYZ by default.
     # Rotation units are degrees in Euler XYZ (roll, pitch, yaw).
-    # Scene-view protocol for Step 3:
+    # Scene-view camera displacement protocol:
     # 1) look_from_above
     # 2) look_from_left
     # 3) look_from_left_front_45

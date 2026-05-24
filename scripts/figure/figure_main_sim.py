@@ -5,7 +5,7 @@ Outputs:
   paper/figures/main_sim.pdf
 
 Run from repository root:
-  python code/scripts/figure/figure_main_sim.py
+  python scripts/figure/figure_main_sim.py
 """
 
 import math

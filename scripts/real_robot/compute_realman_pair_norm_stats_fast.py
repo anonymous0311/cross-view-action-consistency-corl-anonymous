@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 
 
 REPO_DEFAULT = Path("data/real_robot/task123_pair")
-OUTPUT_DEFAULT = Path("assets/pi05_realman_task123_b6b/anonymous/realman_task123_corl")
+OUTPUT_DEFAULT = Path("assets/pi05_realman_task123_cross_view_action_consistency/anonymous/realman_task123_corl")
 
 
 def _fixed_list_column_to_numpy(table, name: str) -> np.ndarray:

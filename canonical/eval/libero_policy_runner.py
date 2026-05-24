@@ -1,4 +1,4 @@
-"""Shared LIBERO policy rollout utilities for Phase-0 evaluation."""
+"""Shared LIBERO policy rollout utilities for camera-robustness evaluation."""
 
 from __future__ import annotations
 
@@ -209,7 +209,7 @@ def build_policy_observation(
 ) -> dict[str, Any]:
     from openpi_client import image_tools  # noqa: PLC0415
 
-    # OpenPI's official LIBERO data uses "both". Locally re-rendered Phase 0A
+    # OpenPI's official LIBERO data uses "both". Locally re-rendered LIBERO pair-data
     # images were saved with only flipud, so keep this configurable.
     base_img = _orient_libero_image(obs["agentview_image"], image_flip_mode)
     wrist_img = _orient_libero_image(obs["robot0_eye_in_hand_image"], image_flip_mode)

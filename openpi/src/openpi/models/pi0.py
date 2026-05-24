@@ -231,10 +231,8 @@ class Pi0(_model.BaseModel):
     ) -> _model.Actions:
         """Predicts the pi0 flow field for a supplied noisy action and time.
 
-        This is the shared path used by training losses that need the base
-        policy's flow at a particular `(x_t, t)`, such as M6 gated fusion.
-        The caller owns observation preprocessing so multi-branch losses can
-        reuse exactly the same image/language tensors.
+        This shared path lets multi-branch losses reuse exactly the same
+        preprocessed image/language tensors for a supplied `(x_t, t)`.
         """
         # one big forward pass of prefix + suffix at once
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
@@ -243,10 +241,8 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
         attn_mask = make_attn_mask(input_mask, ar_mask)
         positions = jnp.cumsum(input_mask, axis=1) - 1
-        canonical_tokens = observation.canonical_tokens  # [B, 128, D_can] or None
-        # Canonical dropout: with probability p, zero the entire canonical context for a sample.
-        # Creates a training contrast between "with canonical" and "without canonical" that
-        # incentivises the model to actively exploit canonical features rather than ignore them.
+        canonical_tokens = observation.canonical_tokens
+        # Optional auxiliary-token dropout.
         if train and self.canonical_token_dropout > 0.0 and canonical_tokens is not None:
             if canonical_drop_rng is None:
                 raise ValueError("canonical_drop_rng is required when canonical_token_dropout is enabled")
@@ -323,13 +319,13 @@ class Pi0(_model.BaseModel):
         if noise is None:
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
-        canonical_tokens = observation.canonical_tokens  # [B, 128, D_can] or None
+        canonical_tokens = observation.canonical_tokens
 
         # first fill KV cache with a forward pass of the prefix
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        # Prefix-only pass: xs[1]=None, so canonical cross-attn guard skips safely
+        # Prefix-only pass: xs[1]=None, so auxiliary-token attention is skipped.
         _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
 
         def step(carry):
