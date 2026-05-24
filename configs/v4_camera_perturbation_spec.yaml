@@ -1,0 +1,163 @@
+# v4 Camera Perturbation Specification
+# Source: assets/m7_boundary/camera_view_targets.parquet
+# Date: 2026-05-14
+# Purpose: defines C1/C2/C3 category rules and parameter ranges for same-state
+#          multiview rerender in Phase 0A.3. Sampling policy targets LIBERO-Plus
+#          camera perturbation proportions across the 4 eval suites.
+
+# ---------------------------------------------------------------------------
+# Category Definitions
+# ---------------------------------------------------------------------------
+# LIBERO-Plus encodes camera perturbations in task name suffixes:
+#   <base>_view_<horizon>_<vertical>_<scale>_<end_rot>_<end_vert>_initstate_<k>
+# All angle fields are in degrees (integer).
+
+category_rules:
+  C1:
+    description: "Camera distance perturbation. Scale != 100 moves the camera closer or farther along the nominal viewing ray."
+    condition: "scale != 100"
+    fixed_fields: {horizon: 0, vertical: 0, end_rot: 0, end_vert: 0}
+
+  C2:
+    description: "Camera spherical position perturbation. Scale is nominal (100) but azimuth (horizon) or elevation (vertical) shifts the camera viewpoint around the scene."
+    condition: "scale == 100 AND end_rot == 0 AND end_vert == 0 AND (horizon != 0 OR vertical != 0)"
+    fixed_fields: {scale: 100, end_rot: 0, end_vert: 0}
+
+  C3:
+    description: "Camera orientation perturbation. Scale is nominal, position is unchanged, but the camera is rotated (end_rot) or tilted vertically (end_vert)."
+    condition: "scale == 100 AND horizon == 0 AND vertical == 0 AND (end_rot != 0 OR end_vert != 0)"
+    fixed_fields: {scale: 100, horizon: 0, vertical: 0}
+
+# ---------------------------------------------------------------------------
+# Parameter Ranges (from parquet, 4-suite LIBERO-Plus eval corpus)
+# ---------------------------------------------------------------------------
+
+parameter_ranges:
+  C1:
+    scale:
+      unit: "percent of nominal distance (100 = nominal)"
+      min: 115
+      max: 200
+      step: 1         # integer, every value from 115..200 observed
+      note: "Scale > 100 means camera is farther from scene (zoomed out). No scale < 100 observed in eval."
+    horizon: {fixed: 0}
+    vertical: {fixed: 0}
+    end_rot: {fixed: 0}
+    end_vert: {fixed: 0}
+
+  C2:
+    scale: {fixed: 100}
+    horizon:
+      unit: "degrees azimuth offset from nominal view (0=nominal, 1..75=left, 285..359=right)"
+      observed_values: [1..75, 285..359]
+      note: "No values in range 76..284 observed; the gap avoids camera positions behind the robot."
+      practical_range:
+        left_ccw_deg: [1, 75]     # counterclockwise from nominal
+        right_cw_deg: [285, 359]  # clockwise from nominal, i.e. -75..-1 mod 360
+    vertical:
+      unit: "degrees elevation offset from nominal"
+      observed_values: [0, 15]
+      note: "Only two values: 0 (same elevation) and 15 (camera tilted higher, looking more down)."
+    end_rot: {fixed: 0}
+    end_vert: {fixed: 0}
+
+  C3:
+    scale: {fixed: 100}
+    horizon: {fixed: 0}
+    vertical: {fixed: 0}
+    end_rot:
+      unit: "degrees camera roll offset (0=nominal)"
+      observed_values: [2, 4, 6, 8, 10, 350, 352, 354, 356, 358]
+      note: "Values 2..10 = small positive roll; 350..358 = small negative roll (mod 360). Max magnitude is 10 degrees."
+      magnitude_range_deg: [-10, 10]
+    end_vert:
+      unit: "degrees camera pitch offset (0=nominal)"
+      observed_values: [2, 4, 6, 8, 10, 350, 352, 354, 356, 358]
+      note: "Same discrete set as end_rot. C3 may set either or both."
+      magnitude_range_deg: [-10, 10]
+
+# ---------------------------------------------------------------------------
+# LIBERO-Plus Eval Distribution (4 suites, from parquet)
+# ---------------------------------------------------------------------------
+
+eval_distribution:
+  source: "assets/m7_boundary/camera_view_targets.parquet"
+  note: "libero_90 is absent from this parquet — see task_compatibility_audit.md"
+  suites:
+    libero_spatial:  {C1: 76,  C2: 238, C3: 62,  total: 376}
+    libero_object:   {C1: 82,  C2: 237, C3: 77,  total: 396}
+    libero_goal:     {C1: 78,  C2: 259, C3: 71,  total: 408}
+    libero_10:       {C1: 77,  C2: 258, C3: 84,  total: 419}
+  total_4_suites:    {C1: 313, C2: 992, C3: 294, total: 1599}
+  proportions:
+    C1: 0.196  # 313 / 1599
+    C2: 0.620  # 992 / 1599
+    C3: 0.184  # 294 / 1599
+
+# ---------------------------------------------------------------------------
+# v4 Training Sampling Policy
+# ---------------------------------------------------------------------------
+
+training_sampling:
+  target_proportions:
+    C1: 0.196
+    C2: 0.620
+    C3: 0.184
+    note: "Matches LIBERO-Plus eval proportions. Apply to all suites including libero_90."
+
+  views_per_state: 2         # nominal view A + one perturbed view B per timestep sample
+  timestep_sampling_rate: 0.10  # sample ~10% of frames per demo for screening runs
+  max_pairs_per_suite:
+    screening: 25000          # ~5k pairs per suite for screening (5 suites)
+    full: null                # no cap for confirmation runs
+
+  C1_sampling:
+    scale_min: 115
+    scale_max: 200
+    draw: "uniform_integer"
+
+  C2_sampling:
+    horizon_pool: "uniform_choice from {1..75} union {285..359}"
+    vertical_pool: "uniform_choice from {0, 15}"
+    note: "Sample (horizon, vertical) pair independently."
+
+  C3_sampling:
+    end_rot_pool: "uniform_choice from {2,4,6,8,10,350,352,354,356,358}"
+    end_vert_pool: "uniform_choice from {2,4,6,8,10,350,352,354,356,358}"
+    note: "Sample end_rot and end_vert independently; both can be non-zero."
+
+  pair_type_flags:
+    matched:       true    # same state, different camera → primary training signal
+    shuffled:      true    # different state, same camera → control
+    wrong_state:   true    # different state, different camera → control
+
+  camera_category_mix: "target_proportions"  # can override: C2_only, C1_only, uniform
+
+# ---------------------------------------------------------------------------
+# Wrist Camera
+# ---------------------------------------------------------------------------
+
+wrist_exclusion:
+  include_in_pair_manifest: false
+  include_in_L_CV_v: false
+  note: "Wrist camera (eye_in_hand_rgb) exists in HDF5 but must not appear in any v4 pair. See wrist_exclusion_audit.md."
+
+# ---------------------------------------------------------------------------
+# Per-Frame Metadata Required in Pair Manifest
+# ---------------------------------------------------------------------------
+
+frame_metadata_required:
+  - camera_id
+  - camera_condition_type   # nominal / C1 / C2 / C3
+  - camera_params:
+      - scale
+      - horizon
+      - vertical
+      - end_rot
+      - end_vert
+  - source_suite
+  - source_task
+  - hdf5_file
+  - episode_id
+  - timestep
+  - state_id                # hash of states[t] vector

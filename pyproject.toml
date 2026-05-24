@@ -1,0 +1,223 @@
+[project]
+name = "cross-view-action-consistency"
+version = "0.1.0"
+description = "Code for Cross-View Action Consistency for camera-robust vision-language-action policies."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+
+[dependency-groups]
+runtime = [
+    # Unified runtime stack validated for this machine.
+    "augmax>=0.3.4",
+    "beartype==0.19.0",
+    "chex>=0.1.88",
+    "dm-tree>=0.1.8",
+    "einops>=0.8.0",
+    "equinox>=0.11.8",
+    "etils>=1.9.0",
+    "filelock>=3.16.1",
+    "flatbuffers>=24.3.25",
+    "flax==0.10.2",
+    "fsspec[gcs]>=2024.6.0",
+    "gym-aloha>=0.1.1",
+    "h5py>=3.13.0",
+    "huggingface_hub>=0.30.0",
+    "imageio>=2.36.1",
+    "jax[cuda13]==0.7.2",
+    "jaxtyping==0.2.36",
+    "lerobot",
+    "ml-dtypes==0.5.3",
+    "ml_collections==1.0.0",
+    "msgpack>=1.0.5",
+    "numpy>=2.0.0,<3.0.0",
+    "numpydantic>=1.6.6",
+    "opencv-python>=4.10.0.84",
+    "optax>=0.2.4",
+    "orbax-checkpoint==0.11.33",
+    "pillow>=11.0.0",
+    "polars>=1.30.0",
+    "pydantic>=2.10.0",
+    "rich>=14.0.0",
+    "safetensors>=0.5.0",
+    "sentencepiece>=0.2.0",
+    "tensorstore==0.1.74",
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+    "torchvision==0.24.1",
+    "tqdm-loggable>=0.2",
+    "transformers==4.48.1",
+    "tree>=0.2.4",
+    "treescope>=0.1.7",
+    "typing-extensions>=4.12.2",
+    "tyro>=0.9.5",
+    "wandb>=0.19.1",
+    "websockets>=11.0",
+]
+dev = [
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.5",
+    "matplotlib>=3.10.0",
+    "nvidia-ml-py>=13.595.45",
+    "pre-commit>=4.0.1",
+    "pytest>=8.3.4",
+    "ruff>=0.8.6",
+]
+rlds = [
+    # Legacy RLDS stack. This is intentionally separate from `runtime` because
+    # TensorFlow 2.15 and the older data pipeline expect NumPy < 2.
+    "augmax>=0.3.4",
+    "beartype==0.19.0",
+    "chex>=0.1.88",
+    "dlimp",
+    "dm-tree>=0.1.8",
+    "einops>=0.8.0",
+    "equinox>=0.11.8",
+    "etils>=1.9.0",
+    "filelock>=3.16.1",
+    "flatbuffers>=24.3.25",
+    "flax==0.10.2",
+    "fsspec[gcs]>=2024.6.0",
+    "gym-aloha>=0.1.1",
+    "h5py>=3.13.0",
+    "huggingface_hub>=0.30.0",
+    "imageio>=2.36.1",
+    "jax[cuda12]==0.4.28",
+    "jaxtyping==0.2.36",
+    "lerobot",
+    "ml_collections==1.0.0",
+    "msgpack>=1.0.5",
+    "numpy>=1.22.4,<2.0.0",
+    "numpydantic>=1.6.6",
+    "opencv-python>=4.10.0.84",
+    "optax>=0.2.4",
+    "orbax-checkpoint==0.4.4",
+    "pillow>=11.0.0",
+    "polars>=1.30.0",
+    "pydantic>=2.10.0",
+    "rich>=14.0.0",
+    "safetensors>=0.5.0",
+    "sentencepiece>=0.2.0",
+    "tensorflow-cpu==2.15.0",
+    "tensorflow-datasets==4.9.9",
+    "tqdm>=4.67.0",
+    "tqdm-loggable>=0.2",
+    "transformers==4.53.2",
+    "tree>=0.2.4",
+    "treescope>=0.1.7",
+    "typing-extensions>=4.12.2",
+    "tyro>=0.9.5",
+    "wandb>=0.19.1",
+    "websockets>=11.0",
+]
+
+[project.urls]
+Repository = "https://github.com/anonymous/cross-view-action-consistency"
+
+[tool.uv]
+default-groups = ["runtime", "dev"]
+conflicts = [
+    [
+        { group = "runtime" },
+        { group = "rlds" },
+    ],
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchaudio = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+lerobot = { git = "https://github.com/huggingface/lerobot", rev = "0cf864870cf29f4738d3ade893e6fd13fbd7cdb5" }
+dlimp = { git = "https://github.com/kvablack/dlimp", rev = "ad72ce3a9b414db2185bc0b38461d4101a65477a" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.setuptools.packages.find]
+where = [
+    ".",
+    "openpi/src",
+    "openpi/packages/openpi-client/src",
+]
+include = [
+    "canonical*",
+    "openpi*",
+    "openpi_client*",
+]
+namespaces = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [
+    "docker",
+    "openpi/src/openpi/models_pytorch/transformers_replace/*",
+    "openpi/third_party",
+    "third_party",
+]
+
+[tool.ruff.lint]
+select = [
+    "B",
+    "C4",
+    "DTZ",
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "FBT",
+    "FURB",
+    "I",
+    "ICN",
+    "ISC",
+    "LOG",
+    "N",
+    "PD",
+    "PERF",
+    "PIE",
+    "PLC",
+    "PLE",
+    "PLR1",
+    "PLR5",
+    "PLW",
+    "PT",
+    "PTH",
+    "Q",
+    "RET",
+    "RUF",
+    "SIM",
+    "SLF",
+    "T10",
+    "T20",
+    "UP",
+    "W",
+]
+ignore = [
+    "F722",
+    "T201",
+    "PD008",
+    "ISC001",
+    "LOG015",
+]
+unfixable = [
+    "B905",
+]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+force-sort-within-sections = true
+single-line-exclusions = ["collections.abc", "typing", "typing_extensions"]
+known-third-party = ["wandb"]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+markers = ["manual: should be run manually."]
+testpaths = [
+    "openpi/src",
+    "openpi/scripts",
+    "openpi/packages",
+]
