@@ -2,13 +2,9 @@
 
 Anonymous code release for **Cross-View Action Consistency for Camera-Robust Vision-Language-Action Policies**.
 
-This repository contains the cross-view action consistency code path used by the paper: same-state multi-view LIBERO data construction, paired cross-view action consistency training configs, CPU smoke tests, LIBERO/LIBERO-Plus evaluation scripts, and lightweight normalization/camera assets. Large generated artifacts are intentionally excluded: datasets, checkpoints, rollout records, logs, result tables, W&B runs, and virtual environments.
 
-VGGT, ACB/canonical-token, routing-audit, archived, and private-note paths are not part of this public release.
 
-## Locked Method
-
-The proposed cross-view action consistency method is **Multi-Sample Bilateral Cross-View Action-Flow Consistency with Action-Biased Time Sampling**. The main training config is:
+The main training config is:
 
 ```text
 pi05_cross_view_action_consistency
@@ -126,33 +122,6 @@ Verify the export:
 
 The cross_view_action_consistency config reads paired data from `data/libero_multiview_lerobot` and uses normalization stats under `assets/pi05_cross_view_fm_only/anonymous/libero_multiview_lerobot/`.
 
-## CPU-Only Tests
-
-These tests should run without GPUs and do not require LIBERO data or checkpoints:
-
-```bash
-CUDA_VISIBLE_DEVICES="" JAX_PLATFORMS=cpu OPENPI_ALLOW_CPU=1 \
-./.venv/bin/python -m pytest -q openpi/src/openpi/models/cross_view_action_consistency_test.py
-
-CUDA_VISIBLE_DEVICES="" JAX_PLATFORMS=cpu OPENPI_ALLOW_CPU=1 \
-./.venv/bin/python -m pytest -q openpi/src/openpi/training/config_test.py
-
-CUDA_VISIBLE_DEVICES="" JAX_PLATFORMS=cpu OPENPI_ALLOW_CPU=1 \
-./.venv/bin/python scripts/cross_view_action_consistency/smoke_multi_sample_asymmetric_cross_view_loss.py
-```
-
-After `data/libero_multiview_lerobot` exists, also run the data-dependent pair-augmentation smoke:
-
-```bash
-CUDA_VISIBLE_DEVICES="" JAX_PLATFORMS=cpu OPENPI_ALLOW_CPU=1 \
-./.venv/bin/python scripts/cross_view_action_consistency/smoke_pair_augmentation.py \
-  --config-name pi05_cross_view_action_consistency \
-  --pair-spatial-aug-mode none \
-  --pair-photometric-aug-mode independent \
-  --batch-size 4
-```
-
-Smoke outputs are written under `results/`, which is ignored by git.
 
 ## Train Main Method
 
