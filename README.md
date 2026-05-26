@@ -78,6 +78,8 @@ Audit the downloaded suites:
   --output-dir results/libero_pair_audit
 ```
 
+Where `libero_10` and `libero_90` together is the `libero_100` on the official LIBERO dataset page.
+
 ## Build Paired LIBERO Data
 
 Run a small same-state rerender smoke test:
