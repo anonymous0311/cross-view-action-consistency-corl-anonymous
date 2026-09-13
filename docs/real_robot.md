@@ -14,7 +14,7 @@ Store one NPZ file per demonstration, with `allow_pickle=False` compatible array
 | `actions` | `[N,7]` commanded base-frame end-effector action and gripper label |
 | `instruction` | Scalar Unicode task instruction |
 
-This interchange adapter uses end-effector position (3), axis-angle orientation (3), and two gripper coordinates (2) for state. Convert robot logs into these channels consistently before export. Preserve the command units, gripper encoding, and base-frame convention when collecting and executing actions; compute normalization from the robot dataset. The exporter does not infer a coordinate transform from camera images.
+The interchange adapter accepts eight proprioceptive channels. Keep their ordering and physical definitions identical in the demonstration logs and the deployment client. Preserve the command units, gripper encoding, and base-frame convention when collecting and executing actions; compute normalization from the robot dataset. The exporter does not infer a coordinate transform from camera images.
 
 For every C1 reference observation, the exporter chooses a valid nearest frame from C0 or C2 with a seeded draw. It drops a reference frame if neither partner meets the 67 ms threshold. It takes action chunks from the original C1-indexed action sequence before filtering, so dropped image pairs never shift action labels. Both baseline and consistency training use the same exported rows.
 
