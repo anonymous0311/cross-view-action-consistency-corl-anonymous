@@ -1,0 +1,6 @@
+include LICENSE LICENSE_GEMMA.txt THIRD_PARTY.md uv.lock
+recursive-include scripts *.py *.sh
+recursive-include tests *.py
+recursive-include docs *.md
+recursive-include configs *.yaml
+recursive-include assets *.json

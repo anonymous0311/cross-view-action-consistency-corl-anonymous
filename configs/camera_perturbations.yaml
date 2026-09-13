@@ -1,0 +1,22 @@
+# Camera protocol; implementation: scripts/data/render_libero_multiview_states.py.
+# Camera extrinsics are fixed for the entire episode.
+suites: [libero_spatial, libero_object, libero_goal, libero_10]
+views_per_state: 2
+all_frames: true
+scene_only: true
+image_orientation: flipud
+full_support:
+  category_probabilities: {C1: 0.196, C2: 0.620, C3: 0.184}
+  C1: {scale_percent: [115, 200]}
+  C2: {signed_azimuth_degrees: [-75, 75], elevation_degrees: [0, 15], exclude_zero_azimuth: true}
+  C3: {signed_endpoint_degrees: [-10, -8, -6, -4, -2, 2, 4, 6, 8, 10]}
+restricted_support:
+  azimuth_magnitude_degrees: [[0, 20], [30, 62]]
+  scale_percent: [[100, 128], [142, 175]]
+  signed_endpoint_degrees: [-7, -5, -3, 3, 5, 7]
+  elevation_degrees: [0, 8]
+evaluation:
+  nominal_tasks: 40
+  nominal_trials_per_task: 50
+  camera_tasks: {C1: 313, C2: 992, C3: 294}
+  camera_trials_per_task: 3
